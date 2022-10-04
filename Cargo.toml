@@ -1,0 +1,16 @@
+[package]
+name = "quantum-differentiable-emulator-cuda"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num-complex = "0.4.2"
+
+[dev-dependencies]
+ndarray = "0.15.6"
+ndarray_einsum_beta = "0.7.0"
+ndarray-rand = "0.14.0"
+
+[build-dependencies]
+cc = "1.0"
+bindgen = "0.60.1"
