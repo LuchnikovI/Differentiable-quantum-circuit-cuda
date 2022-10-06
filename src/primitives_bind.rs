@@ -15,11 +15,6 @@ extern "C" {
     host_state: *mut Complex32,
     qubits_number: usize
   ) -> i32;
-  pub(super) fn norm (
-    state: *const Complex32,
-    result: *mut f32,
-    qubits_number: usize,
-  ) -> i32;
   pub(super) fn q1gate(
     state: *mut Complex32,
     gate: *const Complex32,
@@ -51,4 +46,34 @@ extern "C" {
     pos1: usize,
     qubits_number: usize,
   ) -> i32;
+  pub(super) fn q1grad (
+    fwd: *const Complex32,
+    bwd: *const Complex32,
+    grad: *mut Complex32,
+    pos: usize,
+    qubits_number: usize,
+  ) -> i32;
+  pub(super) fn q2grad (
+    fwd: *const Complex32,
+    bwd: *const Complex32,
+    grad: *mut Complex32,
+    pos2: usize,
+    pos1: usize,
+    qubits_number: usize,
+  ) -> i32;
+  pub(super) fn conj_and_double(
+    src: *const Complex32,
+    dst: *mut Complex32,
+    qubits_number: usize,
+  );
+  pub(super) fn add(
+    src: *const Complex32,
+    dst: *mut Complex32,
+    qubits_number: usize,
+  );
+  pub(super) fn copy(
+    src: *const Complex32,
+    dst: *mut Complex32,
+    qubits_number: usize,
+  );
 }

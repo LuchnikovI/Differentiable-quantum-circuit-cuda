@@ -4,12 +4,16 @@ use super::primitives_bind::{
   set2standard,
   get_state,
   drop_state,
-  norm,
   q1gate,
   q2gate,
   set_from_host,
   get_q1density,
   get_q2density,
+  q1grad,
+  q2grad,
+  conj_and_double,
+  add,
+  copy,
 };
 
 pub struct QuantizedTensor {
@@ -49,6 +53,34 @@ impl QuantizedTensor {
       Self { state_ptr, qubits_number }
     } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status) }
   }
+  pub fn set_from_host(&mut self, state: &[Complex32]) {
+    let mut size = state.len();
+    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
+    let qubits_number = {
+      let mut counter: usize = 0;
+      while size != 1 {
+        size = size >> 1;
+        counter += 1;
+      }
+      counter
+    };
+    assert_eq!(qubits_number, self.qubits_number, "Size of the given state does not match the size of the tensor.");
+    let cuda_status = unsafe { set_from_host(self.state_ptr, state.as_ptr(), qubits_number) };
+    if cuda_status != 0 { panic!("Cuda error with code {} occurred during copying from CPU to GPU.", cuda_status) }
+  }
+  pub fn get_conj_half(&self) -> Self {
+    let mut conj_state_ptr = std::ptr::null_mut();
+    let cuda_status = unsafe { get_state(&mut conj_state_ptr, self.qubits_number) };
+    if cuda_status == 0
+    {
+      unsafe { conj_and_double(self.state_ptr, conj_state_ptr, self.qubits_number) };
+      Self { state_ptr: conj_state_ptr, qubits_number: self.qubits_number }
+    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
+  }
+  pub fn add(&mut self, other: Self) {
+    assert_eq!(self.qubits_number, other.qubits_number, "Tensors have diferent sizes.");
+    unsafe { add(other.state_ptr, self.state_ptr, self.qubits_number) };
+  }
   pub fn get_cpu_state_copy(&self) -> Vec<Complex32> {
     let size = 1 << self.qubits_number;
     let mut state_vec = Vec::with_capacity(size);
@@ -58,12 +90,6 @@ impl QuantizedTensor {
     };
     assert_eq!(copy_status, 0, "Cuda error with code {} occurred during memcopy from the GPU to the CPU.", copy_status);
     state_vec
-  }
-  pub fn norm(&self) -> f32 { // This method is mostly for testing
-    let mut val = 0.;
-    let cuda_status = unsafe { norm(self.state_ptr, &mut val, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during norm computation.", cuda_status);
-    val
   }
   pub fn apply_q1_gate(&mut self, gate: &[Complex32], pos: usize) {
     assert_eq!(gate.len(), 4, "Incorrect len of the gate's buffer.");
@@ -115,6 +141,35 @@ impl QuantizedTensor {
   }
 }
 
+pub fn get_q1_grad(
+  fwd: &QuantizedTensor,
+  bwd: &QuantizedTensor,
+  pos: usize,
+) -> [Complex32; 4]
+{
+  assert_eq!(fwd.qubits_number, bwd.qubits_number, "fwd and bwd have different lengths.");
+  assert!(pos < fwd.qubits_number, "pos out of range.");
+  let mut grad: [Complex32; 4] = Default::default();
+  unsafe { q1grad(fwd.state_ptr, bwd.state_ptr, grad.as_mut_ptr(), pos, bwd.qubits_number) };
+  grad
+}
+
+pub fn get_q2_grad(
+  fwd: &QuantizedTensor,
+  bwd: &QuantizedTensor,
+  pos2: usize,
+  pos1: usize,
+) -> [Complex32; 16]
+{
+  assert_eq!(fwd.qubits_number, bwd.qubits_number, "fwd and bwd have different lengths.");
+  assert!(pos1 != pos2, "pos1 and pos2 must be different.");
+  assert!(pos1 < fwd.qubits_number, "pos1 out of range.");
+  assert!(pos2 < fwd.qubits_number, "pos2 out of range.");
+  let mut grad: [Complex32; 16] = Default::default();
+  unsafe { q2grad(fwd.state_ptr, bwd.state_ptr, grad.as_mut_ptr(), pos2, pos1, bwd.qubits_number) };
+  grad
+}
+
 impl Drop for QuantizedTensor {
   fn drop(&mut self) {
       let cuda_status = unsafe { drop_state(self.state_ptr) };
@@ -122,11 +177,26 @@ impl Drop for QuantizedTensor {
   }
 }
 
+impl Clone for QuantizedTensor {
+  fn clone(&self) -> Self {
+    let mut copy_state_ptr = std::ptr::null_mut();
+    let cuda_status = unsafe { get_state(&mut copy_state_ptr, self.qubits_number) };
+    if cuda_status == 0
+    {
+      unsafe { copy(self.state_ptr, copy_state_ptr, self.qubits_number) };
+      Self { state_ptr: copy_state_ptr, qubits_number: self.qubits_number }
+    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
+  }
+}
+
+unsafe impl Send for QuantizedTensor {}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use std::iter::zip;
   use super::super::common_gates::*;
   use super::super::test_utils::*;
   use ndarray::ArrayView1;
@@ -239,6 +309,60 @@ mod tests {
     }
   }
 
+  fn get_q1_grad_test(fwd: &[Complex32], bwd: &[Complex32], pos: usize) -> Vec<Complex32> {
+    assert_eq!(fwd.len(), bwd.len(), "Lengths of bwd and fwd are different.");
+    let mut size = fwd.len();
+    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
+    let qubits_number = {
+      let mut counter: usize = 0;
+      while size != 1 {
+        size = size >> 1;
+        counter += 1;
+      }
+      counter
+    };
+    let fwd_view = ArrayView1::from(fwd);
+    let fwd_view = fwd_view.into_shape((1 << (qubits_number - pos - 1), 2, 1 << pos)).unwrap();
+    let bwd_view = ArrayView1::from(bwd);
+    let bwd_view = bwd_view.into_shape((1 << (qubits_number - pos - 1), 2, 1 << pos)).unwrap();
+    einsum("iqj,ipj->qp", &[&bwd_view, &fwd_view]).unwrap().iter().map(|x| { *x }).collect()
+  }
+
+  fn get_q2_grad_test(fwd: &[Complex32], bwd: &[Complex32], pos2: usize, pos1: usize) -> Vec<Complex32> {
+    assert_eq!(fwd.len(), bwd.len(), "Lengths of bwd and fwd are different.");
+    let mut size = fwd.len();
+    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
+    let qubits_number = {
+      let mut counter: usize = 0;
+      while size != 1 {
+        size = size >> 1;
+        counter += 1;
+      }
+      counter
+    };
+    let (max_pos, min_pos) = if pos2 > pos1 { (pos2, pos1) } else { (pos1, pos2) };
+    let fwd_view = ArrayView1::from(fwd);
+    let fwd_view = fwd_view.into_shape((1 << (qubits_number - max_pos - 1), 2, 1 << (max_pos - min_pos - 1), 2, 1 << min_pos)).unwrap();
+    let bwd_view = ArrayView1::from(bwd);
+    let bwd_view = bwd_view.into_shape((1 << (qubits_number - max_pos - 1), 2, 1 << (max_pos - min_pos - 1), 2, 1 << min_pos)).unwrap();
+    if pos2 > pos1 {
+      einsum("iqkpm,irksm->qprs", &[&bwd_view, &fwd_view]).unwrap().iter().map(|x| { *x }).collect()
+    } else {
+      einsum("iqkpm,irksm->pqsr", &[&bwd_view, &fwd_view]).unwrap().iter().map(|x| { *x }).collect()
+    }
+  }
+
+  fn conj_half(state: &[Complex32]) -> Vec<Complex32> {
+    state.into_iter().map(|x| { x.conj() / 2. }).collect()
+  }
+
+  fn add(src: &[Complex32], dst: &mut [Complex32]) {
+    assert_eq!(src.len(), dst.len(), "src and dst lengths must be equal.");
+    zip(src.into_iter(), dst.into_iter()).for_each(|(lhs, rhs)| {
+      *rhs = *rhs + *lhs;
+    })
+  }
+
   #[test]
   fn test_q1gate() {
     let qubits_number = 17;
@@ -320,5 +444,60 @@ mod tests {
         cmp_complex_slices(&dens, &vm_dens, 1e-5);
       }
     }
+  }
+
+  #[test]
+  fn test_q1grad() {
+    let qubits_number = 17;
+    let fwd = get_random_state_unnormalized(qubits_number);
+    let bwd = get_random_state_unnormalized(qubits_number);
+    let fwd_vm = QuantizedTensor::new_from_host(&fwd[..]);
+    let bwd_vm = QuantizedTensor::new_from_host(&bwd[..]);
+    for pos in 0..qubits_number {
+      let grad = get_q1_grad_test(&fwd[..], &bwd[..], pos);
+      let vm_grad = get_q1_grad(&fwd_vm, &bwd_vm, pos);
+      cmp_complex_slices(&grad, &vm_grad, 1e-5);
+    }
+  }
+
+  #[test]
+  fn test_q2grad() {
+    let qubits_number = 17;
+    let iters_num = 20;
+    let fwd = get_random_state_unnormalized(qubits_number);
+    let bwd = get_random_state_unnormalized(qubits_number);
+    let fwd_vm = QuantizedTensor::new_from_host(&fwd[..]);
+    let bwd_vm = QuantizedTensor::new_from_host(&bwd[..]);
+    for _ in 0..iters_num {
+      let pos1: usize = random::<i32>() as usize % qubits_number;
+      let pos2: usize = random::<i32>() as usize % qubits_number;
+      if pos1 != pos2 {
+        let grad = get_q2_grad_test(&fwd[..], &bwd[..], pos2, pos1);
+        let vm_grad = get_q2_grad(&fwd_vm, &bwd_vm, pos2, pos1);
+        cmp_complex_slices(&grad, &vm_grad, 1e-5);
+      }
+    }
+  }
+
+  #[test]
+  fn test_conj_half() {
+    let qubits_number = 17;
+    let state = get_random_state_unnormalized(qubits_number);
+    let vm = QuantizedTensor::new_from_host(&state[..]);
+    let conj1 = conj_half(&state);
+    let conj2 = vm.get_conj_half().get_cpu_state_copy();
+    cmp_complex_slices(&conj1[..], &conj2[..], 1e-5);
+  }
+
+  #[test]
+  fn test_add() {
+    let qubits_number = 17;
+    let src = get_random_state_unnormalized(qubits_number);
+    let mut dst = get_random_state_unnormalized(qubits_number);
+    let vm_src = QuantizedTensor::new_from_host(&src[..]);
+    let mut vm_dst = QuantizedTensor::new_from_host(&dst[..]);
+    add(&src[..], &mut dst[..]);
+    vm_dst.add(vm_src);
+    cmp_complex_slices(&dst[..], &vm_dst.get_cpu_state_copy()[..], 1e-5);
   }
 }
