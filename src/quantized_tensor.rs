@@ -141,6 +141,15 @@ impl QuantizedTensor {
   }
 }
 
+pub fn data_transfer(
+  src: &QuantizedTensor,
+  dst: &mut QuantizedTensor,
+)
+{
+  assert_eq!(src.qubits_number, dst.qubits_number, "fwd and bwd have different lengths.");
+  unsafe { copy(src.state_ptr, dst.state_ptr, src.qubits_number) };
+}
+
 pub fn get_q1_grad(
   fwd: &QuantizedTensor,
   bwd: &QuantizedTensor,

@@ -8,19 +8,56 @@
 #define BLOCKS_NUM 128
 #define THREADS_NUM 128 // must be 2^n
 
-#define MIN(a,b) ((a) < (b) ? (a) : (b))
-#define MAX(a,b) ((a) > (b) ? (a) : (b))
+// macro definitions of the most used for loops
+#define PARALLEL_FOR(index, stop_index, ...)            \
+  for (                                                 \
+    size_t tid = threadIdx.x + blockIdx.x * blockDim.x; \
+    index < stop_index;                                 \
+    index += blockDim.x * gridDim.x                     \
+  )                                                     \
+  {                                                     \
+    __VA_ARGS__                                         \
+  }
+
+#define ONE_POSITION_FOR(...)                           \
+  for (int q = 0; q < 2; q++) {                         \
+    for (int p = 0; p < 2; p++) {                       \
+      __VA_ARGS__                                       \
+    }                                                   \
+  }
+
+#define TWO_POSITIONS_FOR(...)                          \
+  for (int q1 = 0; q1 < 2; q1++) {                      \
+    for (int q2 = 0; q2 < 2; q2++) {                    \
+      for (int p1 = 0; p1 < 2; p1++) {                  \
+        for (int p2 = 0; p2 < 2; p2++) {                \
+          __VA_ARGS__                                   \
+        }                                               \
+      }                                                 \
+    }                                                   \
+  }
 
 __constant__ cuFloatComplex q1g[4];
 __constant__ cuFloatComplex q2g[16];
 
-// utility function necessary to traverse a state
+// utility functions necessary to traverse a state
 __device__ size_t insert_zero(
   size_t mask,
   size_t offset
 )
 {
   return ((mask & offset) << 1) | ((~mask) & offset);
+}
+
+__device__ size_t insert_two_zeros(
+  size_t mask1,
+  size_t mask2,
+  size_t offset
+)
+{
+  size_t min_index_mask = mask1 > mask2 ? mask1 : mask2;
+  size_t max_index_mask = mask1 > mask2 ? mask2 : mask1;
+  return insert_zero(max_index_mask, insert_zero(min_index_mask, offset));
 }
 
 // allocate an uninitialized state on the device
@@ -64,14 +101,8 @@ __global__ void _set2standard (
   size_t  qubits_number
 )
 {
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < (1 << qubits_number);
-    tid += blockDim.x * gridDim.x
-  )
-  {
-    state[tid] = {0., 0.};
-  }
+  size_t size = 1 << qubits_number;
+  PARALLEL_FOR(tid, size, state[tid] = {0., 0.};)
   __syncthreads();
   if ( blockIdx.x == 0 && threadIdx.x == 0 ) {
     state[0] = {1., 0.};
@@ -108,52 +139,39 @@ __global__ void _q1grad (
     {0., 0.}, {0., 0.},
     {0., 0.}, {0., 0.},
   };
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
-  )
-  {
+  PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        tmp[2 * p + q] = cuCaddf(
-          tmp[2 * p + q],
-          cuCmulf(
-            bwd[p * stride + btid],
-            fwd[q * stride + btid]
-          )
-        );
-      }
-    }
-  }
-  for (int q = 0; q < 2; q++) {
-    for (int p = 0; p < 2; p++) {
-      cache[2 * p + q + 4 * threadIdx.x] = tmp[2 * p + q];
-    }
-  }
+    ONE_POSITION_FOR(
+      tmp[2 * p + q] = cuCaddf(
+        tmp[2 * p + q],
+        cuCmulf(
+          bwd[p * stride + btid],
+          fwd[q * stride + btid]
+        )
+      );
+    )
+  )
+  ONE_POSITION_FOR(
+    cache[2 * p + q + 4 * threadIdx.x] = tmp[2 * p + q];
+  )
   __syncthreads();
   int s = THREADS_NUM / 2;
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
-      for (int q = 0; q < 2; q++) {
-        for (int p = 0; p < 2; p++) {
-          cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
-            cache[2 * p + q + 4 * threadIdx.x],
-            cache[2 * p + q + 4 * (threadIdx.x + s)]
-          );
-        }
-      }
+      ONE_POSITION_FOR(
+        cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
+          cache[2 * p + q + 4 * threadIdx.x],
+          cache[2 * p + q + 4 * (threadIdx.x + s)]
+        );
+      )
     }
     __syncthreads();
     s /= 2;
   }
   if (threadIdx.x == 0) {
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        grad[2 * p + q + 4 * blockIdx.x] = cache[2 * p + q];
-      }
-    }
+    ONE_POSITION_FOR(
+      grad[2 * p + q + 4 * blockIdx.x] = cache[2 * p + q];
+    )
   }
 }
 
@@ -184,14 +202,12 @@ int q1grad (
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        grad[2 * p + q] = cuCaddf(
-          grad[2 * p + q],
-          host_grad[2 * p + q + 4 * i]
-        );
-      }
-    }
+    ONE_POSITION_FOR(
+      grad[2 * p + q] = cuCaddf(
+        grad[2 * p + q],
+        host_grad[2 * p + q + 4 * i]
+      );
+    )
   }
   delete[] host_grad;
   int32_t free_status = cudaFree(device_grad);
@@ -213,11 +229,9 @@ __global__ void _q2grad (
 )
 {
   __shared__ cuFloatComplex cache[16 * THREADS_NUM];
-  size_t min_pos = MIN(pos1, pos2);
-  size_t max_pos = MAX(pos1, pos2);
-  size_t min_mask =  SIZE_MAX << min_pos;
-  size_t max_mask =  SIZE_MAX << max_pos;
   size_t size = 1 << qubits_number;
+  size_t mask1 =  SIZE_MAX << pos1;
+  size_t mask2 =  SIZE_MAX << pos2;
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
@@ -227,68 +241,39 @@ __global__ void _q2grad (
     {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
     {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
   };
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
+  PARALLEL_FOR(tid, batch_size,
+    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    TWO_POSITIONS_FOR(
+      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+        tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
+        cuCmulf(
+          bwd[p2 * stride2 + p1 * stride1 + btid],
+          fwd[q2 * stride2 + q1 * stride1 + btid]
+        )
+      );
+    )
   )
-  {
-    size_t btid = insert_zero(max_mask, insert_zero(min_mask, tid));
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
-              tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
-              cuCmulf(
-                bwd[p2 * stride2 + p1 * stride1 + btid],
-                fwd[q2 * stride2 + q1 * stride1 + btid]
-              )
-            );
-          }
-        }
-      }
-    }
-  }
-  for (int q1 = 0; q1 < 2; q1++) {
-    for (int q2 = 0; q2 < 2; q2++) {
-      for (int p1 = 0; p1 < 2; p1++) {
-        for (int p2 = 0; p2 < 2; p2++) {
-          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = tmp[8 * p2 + 4 * p1 + 2 * q2 + q1];
-        }
-      }
-    }
-  }
+  TWO_POSITIONS_FOR(
+    cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = tmp[8 * p2 + 4 * p1 + 2 * q2 + q1];
+  )
   __syncthreads();
   int s = THREADS_NUM / 2;
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
-      for (int q1 = 0; q1 < 2; q1++) {
-        for (int q2 = 0; q2 < 2; q2++) {
-          for (int p1 = 0; p1 < 2; p1++) {
-            for (int p2 = 0; p2 < 2; p2++) {
-              cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
-                cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
-                cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
-              );
-            }
-          }
-        }
-      }
+      TWO_POSITIONS_FOR(
+        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
+          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
+          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
+        );
+      )
     }
     __syncthreads();
     s /= 2;
   }
   if (threadIdx.x == 0) {
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            grad[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * blockIdx.x] = cache[8 * p2 + 4 * p1 + 2 * q2 + q1];
-          }
-        }
-      }
-    }
+    TWO_POSITIONS_FOR(
+      grad[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * blockIdx.x] = cache[8 * p2 + 4 * p1 + 2 * q2 + q1];
+    )
   }
 }
 
@@ -321,18 +306,12 @@ int q2grad (
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            grad[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
-              grad[8 * p2 + 4 * p1 + 2 * q2 + q1],
-              host_grad[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
-            );
-          }
-        }
-      }
-    }
+    TWO_POSITIONS_FOR(
+      grad[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+        grad[8 * p2 + 4 * p1 + 2 * q2 + q1],
+        host_grad[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
+      );
+    )
   }
   delete[] host_grad;
   int32_t free_status = cudaFree(device_grad);
@@ -366,12 +345,7 @@ __global__ void _q1gate(
   size_t stride = 1 << pos;
   size_t size = 1 << qubits_number;
   size_t batch_size = size >> 1;
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
-  )
-  {
+  PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
     cuFloatComplex tmp = cuCaddf(
       cuCmulf(q1g[0], state[btid]),
@@ -382,7 +356,7 @@ __global__ void _q1gate(
       cuCmulf(q1g[3], state[btid + stride])
     );
     state[btid] = tmp;
-  }
+  )
 }
 
 extern "C"
@@ -406,42 +380,29 @@ __global__ void _q2gate(
   size_t qubits_number
 )
 {
-  size_t min_pos = MIN(pos1, pos2);
-  size_t max_pos = MAX(pos1, pos2);
-  size_t min_mask =  SIZE_MAX << min_pos;
-  size_t max_mask =  SIZE_MAX << max_pos;
   size_t size = 1 << qubits_number;
+  size_t mask1 =  SIZE_MAX << pos1;
+  size_t mask2 =  SIZE_MAX << pos2;
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
-  )
-  {
-    size_t btid = insert_zero(max_mask, insert_zero(min_mask, tid));
+  PARALLEL_FOR(tid, batch_size,
+    size_t btid = insert_two_zeros(mask1, mask2, tid);
     cuFloatComplex tmp[4] = { {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.} };
-    for (size_t p1 = 0; p1 < 2; p1++) {
-      for (size_t p2 = 0; p2 < 2; p2++) {
-        for (size_t q1 = 0; q1 < 2; q1++) {
-          for (size_t q2 = 0; q2 < 2; q2++) {
-            tmp[2 * q2 + q1] = cuCaddf(
-              tmp[2 * q2 + q1],
-              cuCmulf(
-                q2g[8 * q2 + 4 * q1 + 2 * p2 + p1],
-                state[stride2 * p2 + stride1 * p1 + btid]
-              )
-            );
-          }
-        }
-      }
-    }
+    TWO_POSITIONS_FOR(
+      tmp[2 * q2 + q1] = cuCaddf(
+        tmp[2 * q2 + q1],
+        cuCmulf(
+          q2g[8 * q2 + 4 * q1 + 2 * p2 + p1],
+          state[stride2 * p2 + stride1 * p1 + btid]
+        )
+      );
+    )
     state[btid] = tmp[0];
     state[btid + stride1] = tmp[1];
     state[btid + stride2] = tmp[2];
     state[btid + stride1 + stride2] = tmp[3];
-  }
+  )
 }
 
 extern "C"
@@ -475,52 +436,39 @@ __global__ void _get_q1density(
     {0., 0.}, {0., 0.},
     {0., 0.}, {0., 0.},
   };
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
-  )
-  {
+  PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        tmp[2 * p + q] = cuCaddf(
-          tmp[2 * p + q],
-          cuCmulf(
-            state[p * stride + btid],
-            cuConjf(state[q * stride + btid])
-          )
-        );
-      }
-    }
-  }
-  for (int q = 0; q < 2; q++) {
-    for (int p = 0; p < 2; p++) {
-      cache[2 * p + q + 4 * threadIdx.x] = tmp[2 * p + q];
-    }
-  }
+    ONE_POSITION_FOR(
+      tmp[2 * p + q] = cuCaddf(
+        tmp[2 * p + q],
+        cuCmulf(
+          state[p * stride + btid],
+          cuConjf(state[q * stride + btid])
+        )
+      );
+    )
+  )
+  ONE_POSITION_FOR(
+    cache[2 * p + q + 4 * threadIdx.x] = tmp[2 * p + q];
+  )
   __syncthreads();
   int s = THREADS_NUM / 2;
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
-      for (int q = 0; q < 2; q++) {
-        for (int p = 0; p < 2; p++) {
-          cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
-            cache[2 * p + q + 4 * threadIdx.x],
-            cache[2 * p + q + 4 * (threadIdx.x + s)]
-          );
-        }
-      }
+      ONE_POSITION_FOR(
+        cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
+          cache[2 * p + q + 4 * threadIdx.x],
+          cache[2 * p + q + 4 * (threadIdx.x + s)]
+        );
+      )
     }
     __syncthreads();
     s /= 2;
   }
   if (threadIdx.x == 0) {
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        density[2 * p + q + 4 * blockIdx.x] = cache[2 * p + q];
-      }
-    }
+    ONE_POSITION_FOR(
+      density[2 * p + q + 4 * blockIdx.x] = cache[2 * p + q];
+    )
   }
 }
 
@@ -549,14 +497,12 @@ int32_t get_q1density(
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
-    for (int q = 0; q < 2; q++) {
-      for (int p = 0; p < 2; p++) {
-        density[2 * p + q] = cuCaddf(
-          density[2 * p + q],
-          host_density[2 * p + q + 4 * i]
-        );
-      }
-    }
+    ONE_POSITION_FOR(
+      density[2 * p + q] = cuCaddf(
+        density[2 * p + q],
+        host_density[2 * p + q + 4 * i]
+      );
+    )
   }
   delete[] host_density;
   int32_t free_status = cudaFree(device_density);
@@ -577,11 +523,9 @@ __global__ void _get_q2density(
 )
 {
   __shared__ cuFloatComplex cache[16 * THREADS_NUM];
-  size_t min_pos = MIN(pos1, pos2);
-  size_t max_pos = MAX(pos1, pos2);
-  size_t min_mask =  SIZE_MAX << min_pos;
-  size_t max_mask =  SIZE_MAX << max_pos;
   size_t size = 1 << qubits_number;
+  size_t mask1 =  SIZE_MAX << pos1;
+  size_t mask2 =  SIZE_MAX << pos2;
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
@@ -591,68 +535,39 @@ __global__ void _get_q2density(
     {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
     {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
   };
-  for (
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-    tid < batch_size;
-    tid += blockDim.x * gridDim.x
+  PARALLEL_FOR(tid, batch_size,
+    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    TWO_POSITIONS_FOR(
+      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+        tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
+        cuCmulf(
+          state[p2 * stride2 + p1 * stride1 + btid],
+          cuConjf(state[q2 * stride2 + q1 * stride1 + btid])
+        )
+      );
+    )
   )
-  {
-    size_t btid = insert_zero(max_mask, insert_zero(min_mask, tid));
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
-              tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
-              cuCmulf(
-                state[p2 * stride2 + p1 * stride1 + btid],
-                cuConjf(state[q2 * stride2 + q1 * stride1 + btid])
-              )
-            );
-          }
-        }
-      }
-    }
-  }
-  for (int q1 = 0; q1 < 2; q1++) {
-    for (int q2 = 0; q2 < 2; q2++) {
-      for (int p1 = 0; p1 < 2; p1++) {
-        for (int p2 = 0; p2 < 2; p2++) {
-          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = tmp[8 * p2 + 4 * p1 + 2 * q2 + q1];
-        }
-      }
-    }
-  }
+  TWO_POSITIONS_FOR(
+    cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = tmp[8 * p2 + 4 * p1 + 2 * q2 + q1];
+  )
   __syncthreads();
   int s = THREADS_NUM / 2;
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
-      for (int q1 = 0; q1 < 2; q1++) {
-        for (int q2 = 0; q2 < 2; q2++) {
-          for (int p1 = 0; p1 < 2; p1++) {
-            for (int p2 = 0; p2 < 2; p2++) {
-              cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
-                cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
-                cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
-              );
-            }
-          }
-        }
-      }
+      TWO_POSITIONS_FOR(
+        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
+          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
+          cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
+        );
+      )
     }
     __syncthreads();
     s /= 2;
   }
   if (threadIdx.x == 0) {
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            density[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * blockIdx.x] = cache[8 * p2 + 4 * p1 + 2 * q2 + q1];
-          }
-        }
-      }
-    }
+    TWO_POSITIONS_FOR(
+      density[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * blockIdx.x] = cache[8 * p2 + 4 * p1 + 2 * q2 + q1];
+    )
   }
 }
 
@@ -683,18 +598,12 @@ int32_t get_q2density(
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
-    for (int q1 = 0; q1 < 2; q1++) {
-      for (int q2 = 0; q2 < 2; q2++) {
-        for (int p1 = 0; p1 < 2; p1++) {
-          for (int p2 = 0; p2 < 2; p2++) {
-            density[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
-              density[8 * p2 + 4 * p1 + 2 * q2 + q1],
-              host_density[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
-            );
-          }
-        }
-      }
-    }
+    TWO_POSITIONS_FOR(
+      density[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+        density[8 * p2 + 4 * p1 + 2 * q2 + q1],
+        host_density[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
+      );
+    )
   }
   delete[] host_density;
   int32_t free_status = cudaFree(device_density);
@@ -712,14 +621,8 @@ __global__ void _copy(
   size_t qubits_number
 )
 {
-  for (
-    size_t tid = threadIdx.x + blockDim.x * blockIdx.x;
-    tid < (1 << qubits_number);
-    tid += blockDim.x * gridDim.x
-  )
-  {
-    dst[tid] = src[tid];
-  }
+  size_t size = 1 << qubits_number;
+  PARALLEL_FOR(tid, size, dst[tid] = src[tid];)
 }
 
 extern "C"
@@ -743,15 +646,11 @@ __global__ void _conj_and_double(
   size_t qubits_number
 )
 {
-  for (
-    size_t tid = threadIdx.x + blockDim.x * blockIdx.x;
-    tid < (1 << qubits_number);
-    tid += blockDim.x * gridDim.x
-  )
-  {
+  size_t size = 1 << qubits_number;
+  PARALLEL_FOR(tid, size,
     dst[tid].x = 2 * src[tid].x;
     dst[tid].y = -2 * src[tid].y;
-  }
+  )
 }
 
 extern "C"
@@ -774,14 +673,8 @@ __global__ void _add(
   size_t qubits_number
 )
 {
-  for (
-    size_t tid = threadIdx.x + blockDim.x * blockIdx.x;
-    tid < (1 << qubits_number);
-    tid += blockDim.x * gridDim.x
-  )
-  {
-    dst[tid] = cuCaddf(dst[tid], src[tid]);
-  }
+  size_t size = 1 << qubits_number;
+  PARALLEL_FOR(tid, size, dst[tid] = cuCaddf(dst[tid], src[tid]);)
 }
 
 extern "C"

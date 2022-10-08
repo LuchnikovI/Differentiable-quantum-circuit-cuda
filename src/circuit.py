@@ -100,25 +100,20 @@ class AutoGradCircuit:
       return density_matrices
     @custom_vjp
     def autodiff_run(var_gates, const_gates):
-      density_matrices, _ = self.circuit.forward(
+      density_matrices = self.circuit.forward(
         list(map(lambda x: np.asarray(x), const_gates)), 
         list(map(lambda x: np.asarray(x), var_gates)),
       )
       return density_matrices
     def fwd_run(var_gates, const_gates):
-      density_matrices, state = self.circuit.forward(
+      density_matrices = self.circuit.forward(
         list(map(lambda x: np.asarray(x), const_gates)), 
         list(map(lambda x: np.asarray(x), var_gates)),
       )
       return density_matrices, (const_gates, var_gates)
     def bwd_run(res, density_grads):
       const_gates, var_gates = res
-      _, state = self.circuit.forward(
-        list(map(lambda x: np.asarray(x), const_gates)), 
-        list(map(lambda x: np.asarray(x), var_gates)),
-      ) # real shit
       gates_grads = self.circuit.backward(
-        state,
         list(map(lambda x: np.asarray(x).conj(), density_grads)),
         list(map(lambda x: np.asarray(x), const_gates)), 
         list(map(lambda x: np.asarray(x), var_gates)),

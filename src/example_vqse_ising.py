@@ -82,7 +82,7 @@ def run_vqcs_ising(
     jnp.tensordot(eye, sx, axes=0).transpose((0, 2, 1, 3)).reshape((4, 4)))
 
   # initial set of parameters
-  key = random.PRNGKey(42)
+  key = random.PRNGKey(43)
   key, subkey = random.split(key)
   params = 0.1 * random.normal(subkey, (2 * layers_number,))
 
@@ -97,14 +97,14 @@ def run_vqcs_ising(
   
   def loss_grad(params):
     v, g = _loss_grad(params)
-    print("Current energy: {}".format(v))
+    #print("Current energy: {}".format(v))
     return np.asarray(v, dtype=np.float64), np.asarray(g, dtype=np.float64)
 
   start = time.time()
   result = minimize(
     loss_grad,
     params,
-    method = 'CG',
+    method = 'L-BFGS-B',
     jac = True,
     options={'maxiter': max_iters_number, 'disp': True},
   )

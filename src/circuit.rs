@@ -20,6 +20,7 @@ use super::{
   QuantizedTensor,
   get_q1_grad,
   get_q2_grad,
+  data_transfer,
 };
 
 fn np_matrix_from_slice<'py>(slice: &[Complex32], py: Python<'py>) -> &'py PyArray2<Complex32> {
@@ -62,20 +63,23 @@ impl DerefMut for TensorPyWrapper {
 #[pyclass]
 pub struct Circuit {
   instructions: Vec<Instruction>,
+  initial_state: QuantizedTensor,
   state: QuantizedTensor,
 }
 
 #[pymethods]
 impl Circuit {
   #[new]
-  fn new(qubits_number: usize) -> Self {
+  fn new<'py>(qubits_number: usize) -> Self {
+    let state = QuantizedTensor::new_standard(qubits_number);
     Self {
       instructions: Vec::new(),
-      state: QuantizedTensor::new_standard(qubits_number),
+      initial_state: state.clone(),
+      state: state,
     }
   }
   fn set_state_from_vector(&mut self, vector: PyReadonlyArray1<Complex32>) {
-    self.state.set_from_host(vector.as_slice().unwrap());
+    self.initial_state.set_from_host(vector.as_slice().unwrap());
   }
   fn add_q2_const_gate(&mut self, pos2: usize, pos1: usize) {
     self.instructions.push(Instruction::ConstQ2Gate((pos2, pos1)))
@@ -110,7 +114,7 @@ impl Circuit {
   }
 
   fn run<'py>(
-    &self,
+    &mut self,
     const_gates: Vec<PyReadonlyArray2<Complex32>>,
     var_gates: Vec<PyReadonlyArray2<Complex32>>,
     py: Python<'py>,
@@ -119,30 +123,30 @@ impl Circuit {
     let mut density_matrices = Vec::new();
     let mut const_gates = VecDeque::from(const_gates);
     let mut var_gates = VecDeque::from(var_gates);
-    let mut state = self.state.clone();
+    data_transfer(&self.initial_state, &mut self.state);
     for inst in &self.instructions {
       match inst {
         Instruction::ConstQ1Gate(pos) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
-          state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
         Instruction::ConstQ2Gate((pos2, pos1)) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
-          state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::VarQ1Gate(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
-          state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
         Instruction::VarQ2Gate((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
-          state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::Q1Density(pos) | Instruction::DiffQ1Density(pos)=> {
-          density_matrices.push(np_matrix_from_slice(&state.get_q1_density(*pos)[..], py));
+          density_matrices.push(np_matrix_from_slice(&self.state.get_q1_density(*pos)[..], py));
         },
         Instruction::Q2Density((pos2, pos1)) | Instruction::DiffQ2Density((pos2, pos1)) => {
-          density_matrices.push(np_matrix_from_slice(&state.get_q2_density(*pos2, *pos1)[..], py));
+          density_matrices.push(np_matrix_from_slice(&self.state.get_q2_density(*pos2, *pos1)[..], py));
         },
       }
     }
@@ -152,52 +156,51 @@ impl Circuit {
   }
 
   fn forward<'py>(
-    &self,
+    &mut self,
     const_gates: Vec<PyReadonlyArray2<Complex32>>,
     var_gates: Vec<PyReadonlyArray2<Complex32>>,
     py: Python<'py>,
-  ) -> (Vec<&'py PyArray2<Complex32>>, &'py PyCell<TensorPyWrapper>)
+  ) -> Vec<&'py PyArray2<Complex32>>
   {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
     let mut density_matrices = Vec::new();
     let mut const_gates = VecDeque::from(const_gates);
     let mut var_gates = VecDeque::from(var_gates);
-    let mut state = self.state.clone();
+    data_transfer(&self.initial_state, &mut self.state);
     for inst in &self.instructions {
       match inst {
         Instruction::ConstQ1Gate(pos) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
-          state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
         Instruction::ConstQ2Gate((pos2, pos1)) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
-          state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::VarQ1Gate(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
-          state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
         Instruction::VarQ2Gate((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
-          state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::DiffQ1Density(pos)=> {
-          density_matrices.push(np_matrix_from_slice(&state.get_q1_density(*pos)[..], py));
+          density_matrices.push(np_matrix_from_slice(&self.state.get_q1_density(*pos)[..], py));
         },
         Instruction::DiffQ2Density((pos2, pos1)) => {
-          density_matrices.push(np_matrix_from_slice(&state.get_q2_density(*pos2, *pos1)[..], py));
+          density_matrices.push(np_matrix_from_slice(&self.state.get_q2_density(*pos2, *pos1)[..], py));
         },
         _ => {},
       }
     }
     if !const_gates.is_empty() { panic!("Number of constant gates is more than required.") };
     if !var_gates.is_empty() { panic!("Number of variable gates is more than required.") };
-    (density_matrices, PyCell::new(py, TensorPyWrapper(state)).unwrap())
+    density_matrices
   }
 
   fn backward<'py>(
-    &self,
-    state: &PyCell<TensorPyWrapper>,
+    &mut self,
     mut grads_wrt_density: Vec<PyReadonlyArray2<Complex32>>,
     mut const_gates: Vec<PyReadonlyArray2<Complex32>>,
     mut var_gates: Vec<PyReadonlyArray2<Complex32>>,
@@ -205,7 +208,7 @@ impl Circuit {
   ) -> Vec<&'py PyArray2<Complex32>>
   {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
-    let mut fwd = state.borrow_mut();
+    let fwd = &mut self.state;
     let mut bwd_option: Option<QuantizedTensor> = None;
     let mut grads_wrt_gates = VecDeque::new();
     for inst in self.instructions.iter().rev() {
