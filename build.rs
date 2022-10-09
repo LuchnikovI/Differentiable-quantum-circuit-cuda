@@ -5,10 +5,6 @@ macro_rules! cuda_flags {
     ($builder:expr) => {
       $builder
         .flag("-arch=sm_80")
-        .flag("-gencode").flag("arch=compute_80,code=sm_80")
-        .flag("-gencode").flag("arch=compute_86,code=sm_86")
-        .flag("-gencode").flag("arch=compute_87,code=sm_87")
-        .flag("-gencode").flag("arch=compute_86,code=compute_86")
         .file("src/primitives.cu")
         .compile("libprimitives.a");
     };
