@@ -8,77 +8,95 @@ from differentiable_circuit import Circuit
 class AutoGradCircuit:
 
   def __init__(self, qubits_number: int):
-    """Quantum circuit that supports automatic differentiation."""
+    """Quantum circuit with automatic differentiation."""
     self.circuit = Circuit(qubits_number)
   
   def set_state_from_vector(
     self,
     vec: jnp.ndarray,
   ):
-    """Set initial state from an array.
+    """Set initial state from a jax array.
     Args:
-      vec: jnp.ndarray, a state.
+      vec: jnp.ndarray, an initial state.
     """
     self.circuit.set_state_from_vector(np.asarray(vec))
 
   def add_q2_const_gate(self, pos2: int, pos1: int):
-    """Adds a constant two-qubit gate to a circuit.
+    """Adds a constant two-qubit gate to the circuit.
     Args:
       pos2: int, a position of a qubit that is considered as 'control' qubit,
       pos1: int, a position of a qubit that is conisdered as 'target' qubit.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
     """
     self.circuit.add_q2_const_gate(pos2, pos1)
 
   def add_q2_var_gate(self, pos2: int, pos1: int):
-    """Adds a variable two-qubit gate to a circuit.
+    """Adds a variable two-qubit gate to the circuit.
     Args:
       pos2: int, a position of a qubit that is considered as 'control' qubit,
       pos1: int, a position of a qubit that is conisdered as 'target' qubit.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
     """
     self.circuit.add_q2_var_gate(pos2, pos1)
 
   def add_q1_const_gate(self, pos: int):
-    """Adds a constant one-qubit gate to a circuit.
+    """Adds a constant one-qubit gate to the circuit.
     Args:
       pos: int, a position of a qubit that the gate is being applied to.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
     """
     self.circuit.add_q1_const_gate(pos)
 
   def add_q1_var_gate(self, pos: int):
-    """Adds a variable one-qubit gate to a circuit.
+    """Adds a variable one-qubit gate to the circuit.
     Args:
       pos: int, a position of a qubit that the gate is being applied to.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
     """
     self.circuit.add_q1_var_gate(pos)
 
   def get_q2_dens_op(self, pos2: int, pos1: int):
-    """Adds an operation that evaluates a two-qubit density matrix
+    """Adds an operation to the circuit that evaluates a two-qubit density matrix
     when the circuit is being run.
     Args:
-      pos2 and pos1: positions of qubits whose density matrix is being evaluated."""
+      pos2 and pos1: positions of qubits whose density matrix is being evaluated.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order)."""
     self.circuit.get_q2_dens_op(pos2, pos1)
 
   def get_q1_dens_op(self, pos: int):
-    """Adds an operation that evaluates a one-qubit density matrix
+    """Adds an operation to the circuit that evaluates a one-qubit density matrix
     when the circuit is being run.
     Args:
-      pos: position of a qubit whose density matrix is being evaluated."""
+      pos: position of a qubit whose density matrix is being evaluated.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order)."""
     self.circuit.get_q1_dens_op(pos)
 
   def get_q2_dens_op_with_grad(self, pos2: int, pos1: int):
-    """Adds an operation that evaluates a two-qubit density matrix
-    when the circuit is being run. At the backward pass it also
-    takes gradient wrt the density matrix into account.
+    """Adds an operation to the circuit that evaluates a two-qubit density matrix
+    when the circuit is being run. At the backward propagation stage
+    the gradient wrt to the given density matrix is being propagated
+    through the circuit.
     Args:
-      pos2 and pos1: positions of qubits whose density matrix is being evaluated."""
+      pos2 and pos1: positions of qubits whose density matrix is being evaluated.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order)."""
     self.circuit.get_q2_dens_op_with_grad(pos2, pos1)
 
   def get_q1_dens_op_with_grad(self, pos: int):
     """Adds an operation that evaluates a one-qubit density matrix
-    when the circuit is being run. At the backward pass it also
-    takes gradient wrt the density matrix into account.
+    when the circuit is being run. At the backward propagation stage
+    the gradient wrt to the given density matrix is being propagated
+    through the circuit.
     Args:
-      pos: position of a qubit whose density matrix is being evaluated."""
+      pos: position of a qubit whose density matrix is being evaluated.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order)."""
     self.circuit.get_q1_dens_op_with_grad(pos)
 
   def build(
@@ -88,10 +106,10 @@ class AutoGradCircuit:
       Callable[[List[jnp.ndarray], List[jnp.ndarray]], List[np.ndarray]]
     ]:
     """Returns two functions. The first function runs the circuit given a
-    list of constant and variable gates and evaluates all required density matrices.
-    The second function evaluates only the density matrices whose gradients are
-    necessary to take into account but it supports backpropagation for
-    optimization purposes."""
+    list of constant and variable gates and evaluates all required density matrices. The
+    first function does not support backward pass.
+    The second function evaluates only those density matrices which take part in the gradients
+    backward pass. The second function supports backard pass."""
     def simple_run(var_gates, const_gates):
       density_matrices = self.circuit.run(
         list(map(lambda x: np.asarray(x), const_gates)), 
