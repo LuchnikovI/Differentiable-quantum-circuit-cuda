@@ -1,79 +1,88 @@
-use num_complex::Complex32;
+use num_complex;
+use std::os::raw::{
+  c_double,
+  c_float,
+};
+
+#[cfg(not(feature = "f64"))]
+type Complex = num_complex::Complex<c_float>;
+#[cfg(feature = "f64")]
+type Complex = num_complex::Complex<c_double>;
 
 extern "C" {
   pub(super) fn set2standard(
-    state: *mut Complex32,
+    state: *mut Complex,
     qubits_number: usize
   );
   pub(super) fn get_state(
-    state: *mut *mut Complex32,
+    state: *mut *mut Complex,
     qubits_number: usize
   ) -> i32;
-  pub(super) fn drop_state(state: *mut Complex32) -> i32;
+  pub(super) fn drop_state(state: *mut Complex) -> i32;
   pub(super) fn copy_to_host(
-    state: *const Complex32,
-    host_state: *mut Complex32,
+    state: *const Complex,
+    host_state: *mut Complex,
     qubits_number: usize
   ) -> i32;
   pub(super) fn q1gate(
-    state: *mut Complex32,
-    gate: *const Complex32,
+    state: *mut Complex,
+    gate: *const Complex,
     pos: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn q2gate(
-    state: *mut Complex32,
-    gate: *const Complex32,
+    state: *mut Complex,
+    gate: *const Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn set_from_host (
-    device_state: *mut Complex32,
-    host_state: *const Complex32,
+    device_state: *mut Complex,
+    host_state: *const Complex,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn get_q1density(
-    state: *const Complex32,
-    density: *mut Complex32,
+    state: *const Complex,
+    density: *mut Complex,
     pos: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn get_q2density(
-    state: *const Complex32,
-    density: *mut Complex32,
+    state: *const Complex,
+    density: *mut Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn q1grad (
-    fwd: *const Complex32,
-    bwd: *const Complex32,
-    grad: *mut Complex32,
+    fwd: *const Complex,
+    bwd: *const Complex,
+    grad: *mut Complex,
     pos: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn q2grad (
-    fwd: *const Complex32,
-    bwd: *const Complex32,
-    grad: *mut Complex32,
+    fwd: *const Complex,
+    bwd: *const Complex,
+    grad: *mut Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
   ) -> i32;
   pub(super) fn conj_and_double(
-    src: *const Complex32,
-    dst: *mut Complex32,
+    src: *const Complex,
+    dst: *mut Complex,
     qubits_number: usize,
   );
   pub(super) fn add(
-    src: *const Complex32,
-    dst: *mut Complex32,
+    src: *const Complex,
+    dst: *mut Complex,
     qubits_number: usize,
   );
   pub(super) fn copy(
-    src: *const Complex32,
-    dst: *mut Complex32,
+    src: *const Complex,
+    dst: *mut Complex,
     qubits_number: usize,
   );
 }

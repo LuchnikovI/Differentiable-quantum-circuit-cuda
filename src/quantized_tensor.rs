@@ -1,4 +1,8 @@
-use num_complex::Complex32;
+use num_complex;
+use std::os::raw::{
+  c_double,
+  c_float,
+};
 use super::primitives_bind::{
   copy_to_host,
   set2standard,
@@ -16,12 +20,32 @@ use super::primitives_bind::{
   copy,
 };
 
+#[cfg(not(feature = "f64"))]
+type Complex = num_complex::Complex<c_float>;
+#[cfg(feature = "f64")]
+type Complex = num_complex::Complex<c_double>;
+#[cfg(not(feature = "f64"))]
+type Float = c_float;
+#[cfg(feature = "f64")]
+type Float = c_double;
+
+fn get_qubits_number(mut size: usize) -> usize {
+  assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
+  let mut counter: usize = 0;
+  while size != 1 {
+    size = size >> 1;
+    counter += 1;
+  }
+  counter
+}
+
 pub struct QuantizedTensor {
-  state_ptr: *mut Complex32,
+  state_ptr: *mut Complex,
   qubits_number: usize,
 }
 
 impl QuantizedTensor {
+
   pub fn new_standard(qubits_number: usize) -> Self {
     let mut state_ptr = std::ptr::null_mut();
     let cuda_status = unsafe { get_state(&mut state_ptr, qubits_number) };
@@ -31,17 +55,9 @@ impl QuantizedTensor {
       Self { state_ptr, qubits_number }
     } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
   }
-  pub fn new_from_host(state: &[Complex32]) -> Self {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+
+  pub fn new_from_host(state: &[Complex]) -> Self {
+    let qubits_number = get_qubits_number(state.len());
     let mut state_ptr = std::ptr::null_mut();
     let mut cuda_status = unsafe { get_state(&mut state_ptr, qubits_number) };
     if cuda_status == 0
@@ -53,22 +69,14 @@ impl QuantizedTensor {
       Self { state_ptr, qubits_number }
     } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status) }
   }
-  pub fn set_from_host(&mut self, state: &[Complex32]) {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+
+  pub fn set_from_host(&mut self, state: &[Complex]) {
+    let qubits_number = get_qubits_number(state.len());
     assert_eq!(qubits_number, self.qubits_number, "Size of the given state does not match the size of the tensor.");
     let cuda_status = unsafe { set_from_host(self.state_ptr, state.as_ptr(), qubits_number) };
     if cuda_status != 0 { panic!("Cuda error with code {} occurred during copying from CPU to GPU.", cuda_status) }
   }
-  pub fn get_conj_half(&self) -> Self {
+  pub fn conj_and_double(&self) -> Self {
     let mut conj_state_ptr = std::ptr::null_mut();
     let cuda_status = unsafe { get_state(&mut conj_state_ptr, self.qubits_number) };
     if cuda_status == 0
@@ -81,7 +89,7 @@ impl QuantizedTensor {
     assert_eq!(self.qubits_number, other.qubits_number, "Tensors have diferent sizes.");
     unsafe { add(other.state_ptr, self.state_ptr, self.qubits_number) };
   }
-  pub fn get_cpu_state_copy(&self) -> Vec<Complex32> {
+  pub fn get_cpu_state_copy(&self) -> Vec<Complex> {
     let size = 1 << self.qubits_number;
     let mut state_vec = Vec::with_capacity(size);
     let copy_status = unsafe {
@@ -91,23 +99,23 @@ impl QuantizedTensor {
     assert_eq!(copy_status, 0, "Cuda error with code {} occurred during memcopy from the GPU to the CPU.", copy_status);
     state_vec
   }
-  pub fn apply_q1_gate(&mut self, gate: &[Complex32], pos: usize) {
+  pub fn apply_q1_gate(&mut self, gate: &[Complex], pos: usize) {
     assert_eq!(gate.len(), 4, "Incorrect len of the gate's buffer.");
     assert!(pos < self.qubits_number, "pos is out of the bound.");
     let cuda_status = unsafe { q1gate(self.state_ptr, gate.as_ptr(), pos, self.qubits_number) };
     assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 gate application.", cuda_status);
   }
-  pub fn apply_q1_gate_tr(&mut self, gate: &[Complex32], pos: usize) {
+  pub fn apply_q1_gate_tr(&mut self, gate: &[Complex], pos: usize) {
     let mut tr_gate = gate.to_owned();
     tr_gate.swap(1, 2);
     self.apply_q1_gate(&tr_gate[..], pos);
   }
-  pub fn apply_q1_gate_conj_tr(&mut self, gate: &[Complex32], pos: usize) {
-    let mut conj_tr_gate: Vec<Complex32> = gate.into_iter().map(|x| { x.conj() }).collect();
+  pub fn apply_q1_gate_conj_tr(&mut self, gate: &[Complex], pos: usize) {
+    let mut conj_tr_gate: Vec<Complex> = gate.into_iter().map(|x| { x.conj() }).collect();
     conj_tr_gate.swap(1, 2);
     self.apply_q1_gate(&conj_tr_gate[..], pos);
   }
-  pub fn apply_q2_gate(&mut self, gate: &[Complex32], pos2: usize, pos1: usize) {
+  pub fn apply_q2_gate(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
     assert_eq!(gate.len(), 16, "Incorrect len of the gate's buffer.");
     assert!(pos1 != pos2, "pos1 and pos2 must be different.");
     assert!(pos1 < self.qubits_number, "pos1 is out of the bound.");
@@ -115,26 +123,26 @@ impl QuantizedTensor {
     let cuda_status = unsafe { q2gate(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) };
     assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 gate application.", cuda_status);
   }
-  pub fn apply_q2_gate_tr(&mut self, gate: &[Complex32], pos2: usize, pos1: usize) {
+  pub fn apply_q2_gate_tr(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
     let mut tr_gate = gate.to_owned();
     tr_gate.swap(1, 4); tr_gate.swap(2, 8); tr_gate.swap(6, 9);
     tr_gate.swap(3, 12); tr_gate.swap(7, 13); tr_gate.swap(11, 14);
     self.apply_q2_gate(&tr_gate[..], pos2, pos1);
   }
-  pub fn apply_q2_gate_conj_tr(&mut self, gate: &[Complex32], pos2: usize, pos1: usize) {
-    let mut conj_tr_gate: Vec<Complex32> = gate.into_iter().map(|x| { x.conj() }).collect();
+  pub fn apply_q2_gate_conj_tr(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
+    let mut conj_tr_gate: Vec<Complex> = gate.into_iter().map(|x| { x.conj() }).collect();
     conj_tr_gate.swap(1, 4); conj_tr_gate.swap(2, 8); conj_tr_gate.swap(6, 9);
     conj_tr_gate.swap(3, 12); conj_tr_gate.swap(7, 13); conj_tr_gate.swap(11, 14);
     self.apply_q2_gate(&conj_tr_gate[..], pos2, pos1);
   }
-  pub fn get_q1_density(&self, pos: usize) -> [Complex32; 4] {
-    let mut density: [Complex32; 4] = Default::default();
+  pub fn get_q1_density(&self, pos: usize) -> Vec<Complex> {
+    let mut density = vec![Complex::new(0., 0.); 4];
     let cuda_status = unsafe { get_q1density(self.state_ptr, density.as_mut_ptr(), pos, self.qubits_number) };
     assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 density matrix computation.", cuda_status);
     density
   }
-  pub fn get_q2_density(&self, pos2: usize, pos1: usize) -> [Complex32; 16] {
-    let mut density: [Complex32; 16] = Default::default();
+  pub fn get_q2_density(&self, pos2: usize, pos1: usize) -> Vec<Complex> {
+    let mut density = vec![Complex::new(0., 0.); 16];
     let cuda_status = unsafe { get_q2density(self.state_ptr, density.as_mut_ptr(), pos2, pos1, self.qubits_number) };
     assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 density matrix computation.", cuda_status);
     density
@@ -154,11 +162,11 @@ pub fn get_q1_grad(
   fwd: &QuantizedTensor,
   bwd: &QuantizedTensor,
   pos: usize,
-) -> [Complex32; 4]
+) -> Vec<Complex>
 {
   assert_eq!(fwd.qubits_number, bwd.qubits_number, "fwd and bwd have different lengths.");
   assert!(pos < fwd.qubits_number, "pos out of range.");
-  let mut grad: [Complex32; 4] = Default::default();
+  let mut grad = vec![Complex::new(0., 0.); 4];
   unsafe { q1grad(fwd.state_ptr, bwd.state_ptr, grad.as_mut_ptr(), pos, bwd.qubits_number) };
   grad
 }
@@ -168,13 +176,13 @@ pub fn get_q2_grad(
   bwd: &QuantizedTensor,
   pos2: usize,
   pos1: usize,
-) -> [Complex32; 16]
+) -> Vec<Complex>
 {
   assert_eq!(fwd.qubits_number, bwd.qubits_number, "fwd and bwd have different lengths.");
   assert!(pos1 != pos2, "pos1 and pos2 must be different.");
   assert!(pos1 < fwd.qubits_number, "pos1 out of range.");
   assert!(pos2 < fwd.qubits_number, "pos2 out of range.");
-  let mut grad: [Complex32; 16] = Default::default();
+  let mut grad = vec![Complex::new(0., 0.); 16];
   unsafe { q2grad(fwd.state_ptr, bwd.state_ptr, grad.as_mut_ptr(), pos2, pos1, bwd.qubits_number) };
   grad
 }
@@ -212,39 +220,30 @@ mod tests {
   use ndarray_rand::rand::random;
   use ndarray_einsum_beta::einsum;
 
-  fn get_random_q1nonunitary() -> [Complex32; 4] {
+  fn get_random_q1nonunitary() -> [Complex; 4] {
     [
-      Complex32::new(random(), random()), Complex32::new(random(), random()),
-      Complex32::new(random(), random()), Complex32::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()),
     ]
   }
 
-  fn get_random_q2nonunitary() -> [Complex32; 16] {
+  fn get_random_q2nonunitary() -> [Complex; 16] {
     [
-      Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()),
-      Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()),
-      Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()),
-      Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()), Complex32::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()),
+      Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()), Complex::new(random(), random()),
     ]
   }
 
-  fn get_random_state_unnormalized(qubits_number: usize) -> Vec<Complex32> {
+  fn get_random_state_unnormalized(qubits_number: usize) -> Vec<Complex> {
     (0..(1 << qubits_number))
-      .map(|_| { Complex32::new(random(), random()) })
+      .map(|_| { Complex::new(random(), random()) })
       .collect()
   }
 
-  fn apply_q1_gate(state: &[Complex32], gate: &[Complex32], pos: usize) -> Vec<Complex32> {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+  fn apply_q1_gate(state: &[Complex], gate: &[Complex], pos: usize) -> Vec<Complex> {
+    let qubits_number = get_qubits_number(state.len());
     let state_view = ArrayView1::from(state);
     let state_view = state_view.into_shape((1 << (qubits_number - pos - 1), 2, 1 << pos)).unwrap();
     let gate_view = ArrayView1::from(gate);
@@ -252,17 +251,8 @@ mod tests {
     einsum("iqk,jq->ijk", &[&state_view, &gate_view]).unwrap().iter().map(|x| { *x }).collect()
   }
 
-  fn apply_q2_gate(state: &[Complex32], gate: &[Complex32], pos2: usize, pos1: usize) -> Vec<Complex32> {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+  fn apply_q2_gate(state: &[Complex], gate: &[Complex], pos2: usize, pos1: usize) -> Vec<Complex> {
+    let qubits_number = get_qubits_number(state.len());
     let state_view = ArrayView1::from(state);
     let (max_pos, min_pos) = if pos2 > pos1 { (pos2, pos1) } else { (pos1, pos2) };
     let state_view = state_view.into_shape((1 << (qubits_number - max_pos - 1), 2, 1 << (max_pos - min_pos - 1), 2, 1 << min_pos)).unwrap();
@@ -275,17 +265,8 @@ mod tests {
     }
   }
 
-  fn get_q1_density(state: &[Complex32], pos: usize) -> Vec<Complex32> {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+  fn get_q1_density(state: &[Complex], pos: usize) -> Vec<Complex> {
+    let qubits_number = get_qubits_number(state.len());
     let state_view = ArrayView1::from(state);
     let state_view = state_view.into_shape((1 << (qubits_number - pos - 1), 2, 1 << pos)).unwrap();
     let mut state_conj = state_view.to_owned();
@@ -294,17 +275,8 @@ mod tests {
     einsum("iqj,ipj->qp", &[&state_view, &state_conj_view]).unwrap().iter().map(|x| { *x }).collect()
   }
 
-  fn get_q2_density(state: &[Complex32], pos2: usize, pos1: usize) -> Vec<Complex32> {
-    let mut size = state.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+  fn get_q2_density(state: &[Complex], pos2: usize, pos1: usize) -> Vec<Complex> {
+    let qubits_number = get_qubits_number(state.len());
     let state_view = ArrayView1::from(state);
     let (max_pos, min_pos) = if pos2 > pos1 { (pos2, pos1) } else { (pos1, pos2) };
     let state_view = state_view.into_shape((1 << (qubits_number - max_pos - 1), 2, 1 << (max_pos - min_pos - 1), 2, 1 << min_pos)).unwrap();
@@ -318,18 +290,9 @@ mod tests {
     }
   }
 
-  fn get_q1_grad_test(fwd: &[Complex32], bwd: &[Complex32], pos: usize) -> Vec<Complex32> {
+  fn get_q1_grad_test(fwd: &[Complex], bwd: &[Complex], pos: usize) -> Vec<Complex> {
     assert_eq!(fwd.len(), bwd.len(), "Lengths of bwd and fwd are different.");
-    let mut size = fwd.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+    let qubits_number = get_qubits_number(fwd.len());
     let fwd_view = ArrayView1::from(fwd);
     let fwd_view = fwd_view.into_shape((1 << (qubits_number - pos - 1), 2, 1 << pos)).unwrap();
     let bwd_view = ArrayView1::from(bwd);
@@ -337,18 +300,9 @@ mod tests {
     einsum("iqj,ipj->qp", &[&bwd_view, &fwd_view]).unwrap().iter().map(|x| { *x }).collect()
   }
 
-  fn get_q2_grad_test(fwd: &[Complex32], bwd: &[Complex32], pos2: usize, pos1: usize) -> Vec<Complex32> {
+  fn get_q2_grad_test(fwd: &[Complex], bwd: &[Complex], pos2: usize, pos1: usize) -> Vec<Complex> {
     assert_eq!(fwd.len(), bwd.len(), "Lengths of bwd and fwd are different.");
-    let mut size = fwd.len();
-    assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
-    let qubits_number = {
-      let mut counter: usize = 0;
-      while size != 1 {
-        size = size >> 1;
-        counter += 1;
-      }
-      counter
-    };
+    let qubits_number = get_qubits_number(fwd.len());
     let (max_pos, min_pos) = if pos2 > pos1 { (pos2, pos1) } else { (pos1, pos2) };
     let fwd_view = ArrayView1::from(fwd);
     let fwd_view = fwd_view.into_shape((1 << (qubits_number - max_pos - 1), 2, 1 << (max_pos - min_pos - 1), 2, 1 << min_pos)).unwrap();
@@ -361,11 +315,11 @@ mod tests {
     }
   }
 
-  fn conj_half(state: &[Complex32]) -> Vec<Complex32> {
-    state.into_iter().map(|x| { x.conj() / 2. }).collect()
+  fn conj_and_double(state: &[Complex]) -> Vec<Complex> {
+    state.into_iter().map(|x| { x.conj() * 2. }).collect()
   }
 
-  fn add(src: &[Complex32], dst: &mut [Complex32]) {
+  fn add(src: &[Complex], dst: &mut [Complex]) {
     assert_eq!(src.len(), dst.len(), "src and dst lengths must be equal.");
     zip(src.into_iter(), dst.into_iter()).for_each(|(lhs, rhs)| {
       *rhs = *rhs + *lhs;
@@ -416,12 +370,12 @@ mod tests {
       vm.apply_q2_gate(&cnot[..], i, i+1);
     }
     let state = vm.get_cpu_state_copy();
-    let bell_ampl = Complex32::new(1. / f32::sqrt(2.), 0.);
+    let bell_ampl = Complex::new(1. / Float::sqrt(2.), 0.);
     cmp_complex_slices(&state[..1], &[bell_ampl], 1e-5);
     cmp_complex_slices(&state[((1 << qubits_number) - 1)..], &[bell_ampl], 1e-5);
     cmp_complex_slices(
       &state[1..((1 << qubits_number) - 1)],
-      &vec![Complex32::new(0., 0.); (1 << qubits_number) - 2][..],
+      &vec![Complex::new(0., 0.); (1 << qubits_number) - 2][..],
       1e-5,
     );
   }
@@ -493,8 +447,8 @@ mod tests {
     let qubits_number = 17;
     let state = get_random_state_unnormalized(qubits_number);
     let vm = QuantizedTensor::new_from_host(&state[..]);
-    let conj1 = conj_half(&state);
-    let conj2 = vm.get_conj_half().get_cpu_state_copy();
+    let conj1 = conj_and_double(&state);
+    let conj2 = vm.conj_and_double().get_cpu_state_copy();
     cmp_complex_slices(&conj1[..], &conj2[..], 1e-5);
   }
 

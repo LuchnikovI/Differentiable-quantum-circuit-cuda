@@ -1,0 +1,6 @@
+[alias]
+t32 = "test -- --test-threads=1"
+t64 = "test --features f64 -- --test-threads=1"
+
+[build]
+rustflags = ["-Ctarget-cpu=native"]

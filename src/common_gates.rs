@@ -1,17 +1,30 @@
-use num_complex::Complex32;
+use num_complex;
+use std::os::raw::{
+  c_double,
+  c_float,
+};
 
-pub fn get_hadamard() -> [Complex32; 4] {
+#[cfg(not(feature = "f64"))]
+type Complex = num_complex::Complex<c_float>;
+#[cfg(feature = "f64")]
+type Complex = num_complex::Complex<c_double>;
+#[cfg(not(feature = "f64"))]
+type Float = c_float;
+#[cfg(feature = "f64")]
+type Float = c_double;
+
+pub fn get_hadamard() -> [Complex; 4] {
   [
-    Complex32::new(1. / f32::sqrt(2.), 0.), Complex32::new(1. / f32::sqrt(2.), 0.),
-    Complex32::new(1. / f32::sqrt(2.), 0.), Complex32::new(-1. / f32::sqrt(2.), 0.),
+    Complex::new(1. / Float::sqrt(2.), 0.), Complex::new(1. / Float::sqrt(2.), 0.),
+    Complex::new(1. / Float::sqrt(2.), 0.), Complex::new(-1. / Float::sqrt(2.), 0.),
   ]
 }
 
-pub fn get_cnot() -> [Complex32; 16] {
+pub fn get_cnot() -> [Complex; 16] {
   [
-    Complex32::new(1., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
-    Complex32::new(0., 0.), Complex32::new(1., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
-    Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(1., 0.),
-    Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(1., 0.), Complex32::new(0., 0.),
+    Complex::new(1., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+    Complex::new(0., 0.), Complex::new(1., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+    Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(1., 0.),
+    Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(1., 0.), Complex::new(0., 0.),
   ]
 }

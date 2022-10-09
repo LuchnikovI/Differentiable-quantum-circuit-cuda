@@ -1,12 +1,27 @@
 #include <cuComplex.h>
 #include <cstdint>
-#include <curand.h>
-#include <curand_kernel.h>
-#include <stdio.h>
 
 //TODO: adjust kernel parameters
 #define BLOCKS_NUM 128
 #define THREADS_NUM 128 // must be 2^n
+
+#ifdef F64
+  #define ADD cuCadd
+  #define SUB cuCsub
+  #define MUL cuCmul
+  #define CONJ cuConj
+  #define COMPLEX cuDoubleComplex
+  #define COMPLEXNEW make_cuDoubleComplex
+  #define ABS cuCabs
+#else
+  #define ADD cuCaddf
+  #define SUB cuCsubf
+  #define MUL cuCmulf
+  #define CONJ cuConjf
+  #define COMPLEX cuFloatComplex
+  #define COMPLEXNEW make_cuFloatComplex
+  #define ABS cuCabsf
+#endif
 
 // macro definitions of the most used for loops
 #define PARALLEL_FOR(index, stop_index, ...)            \
@@ -37,8 +52,8 @@
     }                                                   \
   }
 
-__constant__ cuFloatComplex q1g[4];
-__constant__ cuFloatComplex q2g[16];
+__constant__ COMPLEX q1g[4];
+__constant__ COMPLEX q2g[16];
 
 // utility functions necessary to traverse a state
 __device__ size_t insert_zero(
@@ -63,32 +78,32 @@ __device__ size_t insert_two_zeros(
 // allocate an uninitialized state on the device
 extern "C"
 int32_t get_state (
-  cuFloatComplex** state,
+  COMPLEX** state,
   size_t qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  int32_t status = cudaMalloc(state, size * sizeof(cuFloatComplex));
+  int32_t status = cudaMalloc(state, size * sizeof(COMPLEX));
   return status;
 }
 
 // copy a state to the host
 extern "C"
 int32_t copy_to_host (
-  cuFloatComplex* state,
-  cuFloatComplex* host_state,
+  COMPLEX* state,
+  COMPLEX* host_state,
   size_t qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  int32_t status = cudaMemcpy(host_state, state, size * sizeof(cuFloatComplex), cudaMemcpyDeviceToHost);
+  int32_t status = cudaMemcpy(host_state, state, size * sizeof(COMPLEX), cudaMemcpyDeviceToHost);
   return status;
 }
 
 // drop state on the device
 extern "C"
 int32_t drop_state(
-  cuFloatComplex* state
+  COMPLEX* state
 )
 {
   int32_t status = cudaFree(state);
@@ -97,21 +112,21 @@ int32_t drop_state(
 
 // initialize state to the standard one
 __global__ void _set2standard (
-  cuFloatComplex* state,
+  COMPLEX* state,
   size_t  qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  PARALLEL_FOR(tid, size, state[tid] = {0., 0.};)
+  PARALLEL_FOR(tid, size, state[tid] = {0, 0};)
   __syncthreads();
   if ( blockIdx.x == 0 && threadIdx.x == 0 ) {
-    state[0] = {1., 0.};
+    state[0] = {1, 0};
   }
 }
 
 extern "C"
 void set2standard (
-  cuFloatComplex* state,
+  COMPLEX* state,
   size_t  qubits_number
 )
 {
@@ -123,28 +138,28 @@ void set2standard (
 
 // computes q1 gate gradient from bwd and fwd "states"
 __global__ void _q1grad (
-  const cuFloatComplex* fwd,
-  const cuFloatComplex* bwd,
-  cuFloatComplex* grad,
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
   size_t pos,
   size_t qubits_number
 )
 {
-  __shared__ cuFloatComplex cache[4 * THREADS_NUM];
+  __shared__ COMPLEX cache[4 * THREADS_NUM];
   size_t mask =  SIZE_MAX << pos;
   size_t stride = 1 << pos;
   size_t size = 1 << qubits_number;
   size_t batch_size = size >> 1;
-  cuFloatComplex tmp[4] = { 
-    {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.},
+  COMPLEX tmp[4] = { 
+    {0, 0}, {0, 0},
+    {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
     ONE_POSITION_FOR(
-      tmp[2 * p + q] = cuCaddf(
+      tmp[2 * p + q] = ADD(
         tmp[2 * p + q],
-        cuCmulf(
+        MUL(
           bwd[p * stride + btid],
           fwd[q * stride + btid]
         )
@@ -159,7 +174,7 @@ __global__ void _q1grad (
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
       ONE_POSITION_FOR(
-        cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
+        cache[2 * p + q + 4 * threadIdx.x] = ADD(
           cache[2 * p + q + 4 * threadIdx.x],
           cache[2 * p + q + 4 * (threadIdx.x + s)]
         );
@@ -177,16 +192,16 @@ __global__ void _q1grad (
 
 extern "C"
 int q1grad (
-  const cuFloatComplex* fwd,
-  const cuFloatComplex* bwd,
-  cuFloatComplex* grad,
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
   size_t pos,
   size_t qubits_number
 )
 {
-  cuFloatComplex* device_grad;
-  cuFloatComplex* host_grad;
-  int32_t alloc_status = cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  COMPLEX* device_grad;
+  COMPLEX* host_grad;
+  int32_t alloc_status = cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX));
   _q1grad<<<BLOCKS_NUM, THREADS_NUM>>>(
     fwd,
     bwd,
@@ -194,16 +209,16 @@ int q1grad (
     pos,
     qubits_number
   );
-  host_grad = (cuFloatComplex*)malloc(4 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  host_grad = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
   int32_t memcopy_status = cudaMemcpy(
     host_grad,
     device_grad,
-    4 * BLOCKS_NUM * sizeof(cuFloatComplex),
+    4 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     ONE_POSITION_FOR(
-      grad[2 * p + q] = cuCaddf(
+      grad[2 * p + q] = ADD(
         grad[2 * p + q],
         host_grad[2 * p + q + 4 * i]
       );
@@ -220,33 +235,33 @@ int q1grad (
 
 // computes q2 hate gradient from fwd and bwd "states"
 __global__ void _q2grad (
-  const cuFloatComplex* fwd,
-  const cuFloatComplex* bwd,
-  cuFloatComplex* grad,
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
 )
 {
-  __shared__ cuFloatComplex cache[16 * THREADS_NUM];
+  __shared__ COMPLEX cache[16 * THREADS_NUM];
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
-  cuFloatComplex tmp[16] = { 
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
+  COMPLEX tmp[16] = { 
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_two_zeros(mask1, mask2, tid);
     TWO_POSITIONS_FOR(
-      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
-        cuCmulf(
+        MUL(
           bwd[p2 * stride2 + p1 * stride1 + btid],
           fwd[q2 * stride2 + q1 * stride1 + btid]
         )
@@ -261,7 +276,7 @@ __global__ void _q2grad (
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
       TWO_POSITIONS_FOR(
-        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
+        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = ADD(
           cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
           cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
         );
@@ -279,17 +294,17 @@ __global__ void _q2grad (
 
 extern "C"
 int q2grad (
-  const cuFloatComplex* fwd,
-  const cuFloatComplex* bwd,
-  cuFloatComplex* grad,
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
 )
 {
-  cuFloatComplex* device_grad;
-  cuFloatComplex* host_grad;
-  int32_t alloc_status = cudaMalloc(&device_grad, 16 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  COMPLEX* device_grad;
+  COMPLEX* host_grad;
+  int32_t alloc_status = cudaMalloc(&device_grad, 16 * BLOCKS_NUM * sizeof(COMPLEX));
   _q2grad<<<BLOCKS_NUM, THREADS_NUM>>>(
     fwd,
     bwd,
@@ -298,16 +313,16 @@ int q2grad (
     pos1,
     qubits_number
   );
-  host_grad = (cuFloatComplex*)malloc(16 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  host_grad = (COMPLEX*)malloc(16 * BLOCKS_NUM * sizeof(COMPLEX));
   int32_t memcopy_status = cudaMemcpy(
     host_grad,
     device_grad,
-    16 * BLOCKS_NUM * sizeof(cuFloatComplex),
+    16 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     TWO_POSITIONS_FOR(
-      grad[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+      grad[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         grad[8 * p2 + 4 * p1 + 2 * q2 + q1],
         host_grad[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
       );
@@ -325,18 +340,18 @@ int q2grad (
 // sets state from host
 extern "C"
 int32_t set_from_host (
-  cuFloatComplex* device_state,
-  const cuFloatComplex* host_state,
+  COMPLEX* device_state,
+  const COMPLEX* host_state,
   size_t qubits_number
 )
 {
-  int32_t memcpy_state = cudaMemcpy(device_state, host_state, (1 << qubits_number) * sizeof(cuFloatComplex), cudaMemcpyHostToDevice);
+  int32_t memcpy_state = cudaMemcpy(device_state, host_state, (1 << qubits_number) * sizeof(COMPLEX), cudaMemcpyHostToDevice);
   return memcpy_state;
 }
 
 // one qubits gate application
 __global__ void _q1gate(
-  cuFloatComplex* state,
+  COMPLEX* state,
   size_t pos,
   size_t qubits_number
 )
@@ -347,13 +362,13 @@ __global__ void _q1gate(
   size_t batch_size = size >> 1;
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
-    cuFloatComplex tmp = cuCaddf(
-      cuCmulf(q1g[0], state[btid]),
-      cuCmulf(q1g[1], state[btid + stride])
+    COMPLEX tmp = ADD(
+      MUL(q1g[0], state[btid]),
+      MUL(q1g[1], state[btid + stride])
     );
-    state[stride + btid] = cuCaddf(
-      cuCmulf(q1g[2], state[btid]),
-      cuCmulf(q1g[3], state[btid + stride])
+    state[stride + btid] = ADD(
+      MUL(q1g[2], state[btid]),
+      MUL(q1g[3], state[btid + stride])
     );
     state[btid] = tmp;
   )
@@ -361,20 +376,20 @@ __global__ void _q1gate(
 
 extern "C"
 int32_t q1gate(
-  cuFloatComplex* state,
-  const cuFloatComplex* gate,
+  COMPLEX* state,
+  const COMPLEX* gate,
   size_t idx,
   size_t qubits_number
 )
 {
-  int32_t copy_status = cudaMemcpyToSymbol(q1g, gate, 4 * sizeof(cuFloatComplex));
+  int32_t copy_status = cudaMemcpyToSymbol(q1g, gate, 4 * sizeof(COMPLEX));
   _q1gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, idx, qubits_number);
   return copy_status;
 }
 
 // two qubits gate application
 __global__ void _q2gate(
-  cuFloatComplex* state,
+  COMPLEX* state,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
@@ -388,11 +403,11 @@ __global__ void _q2gate(
   size_t batch_size = size >> 2;
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_two_zeros(mask1, mask2, tid);
-    cuFloatComplex tmp[4] = { {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.} };
+    COMPLEX tmp[4] = { {0, 0}, {0, 0}, {0, 0}, {0, 0} };
     TWO_POSITIONS_FOR(
-      tmp[2 * q2 + q1] = cuCaddf(
+      tmp[2 * q2 + q1] = ADD(
         tmp[2 * q2 + q1],
-        cuCmulf(
+        MUL(
           q2g[8 * q2 + 4 * q1 + 2 * p2 + p1],
           state[stride2 * p2 + stride1 * p1 + btid]
         )
@@ -407,43 +422,43 @@ __global__ void _q2gate(
 
 extern "C"
 int32_t q2gate(
-  cuFloatComplex* state,
-  const cuFloatComplex* gate,
+  COMPLEX* state,
+  const COMPLEX* gate,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
 )
 {
-  int32_t copy_status = cudaMemcpyToSymbol(q2g, gate, 16 * sizeof(cuFloatComplex));
+  int32_t copy_status = cudaMemcpyToSymbol(q2g, gate, 16 * sizeof(COMPLEX));
   _q2gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
   return copy_status;
 }
 
 // one qubit density matrix computation
 __global__ void _get_q1density(
-  const cuFloatComplex* state,
-  cuFloatComplex* density,
+  const COMPLEX* state,
+  COMPLEX* density,
   size_t pos,
   size_t qubits_number
 )
 {
-  __shared__ cuFloatComplex cache[4 * THREADS_NUM];
+  __shared__ COMPLEX cache[4 * THREADS_NUM];
   size_t mask =  SIZE_MAX << pos;
   size_t stride = 1 << pos;
   size_t size = 1 << qubits_number;
   size_t batch_size = size >> 1;
-  cuFloatComplex tmp[4] = { 
-    {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.},
+  COMPLEX tmp[4] = { 
+    {0, 0}, {0, 0},
+    {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
     ONE_POSITION_FOR(
-      tmp[2 * p + q] = cuCaddf(
+      tmp[2 * p + q] = ADD(
         tmp[2 * p + q],
-        cuCmulf(
+        MUL(
           state[p * stride + btid],
-          cuConjf(state[q * stride + btid])
+          CONJ(state[q * stride + btid])
         )
       );
     )
@@ -456,7 +471,7 @@ __global__ void _get_q1density(
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
       ONE_POSITION_FOR(
-        cache[2 * p + q + 4 * threadIdx.x] = cuCaddf(
+        cache[2 * p + q + 4 * threadIdx.x] = ADD(
           cache[2 * p + q + 4 * threadIdx.x],
           cache[2 * p + q + 4 * (threadIdx.x + s)]
         );
@@ -474,31 +489,31 @@ __global__ void _get_q1density(
 
 extern "C"
 int32_t get_q1density(
-  const cuFloatComplex* state,
-  cuFloatComplex* density,
+  const COMPLEX* state,
+  COMPLEX* density,
   size_t pos,
   size_t qubits_number
 )
 {
-  cuFloatComplex* device_density;
-  cuFloatComplex* host_density;
-  int32_t alloc_status = cudaMalloc(&device_density, 4 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  COMPLEX* device_density;
+  COMPLEX* host_density;
+  int32_t alloc_status = cudaMalloc(&device_density, 4 * BLOCKS_NUM * sizeof(COMPLEX));
   _get_q1density<<<BLOCKS_NUM, THREADS_NUM>>>(
     state,
     device_density,
     pos,
     qubits_number
   );
-  host_density = (cuFloatComplex*)malloc(4 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  host_density = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
   int32_t memcopy_status = cudaMemcpy(
     host_density,
     device_density,
-    4 * BLOCKS_NUM * sizeof(cuFloatComplex),
+    4 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     ONE_POSITION_FOR(
-      density[2 * p + q] = cuCaddf(
+      density[2 * p + q] = ADD(
         density[2 * p + q],
         host_density[2 * p + q + 4 * i]
       );
@@ -515,34 +530,34 @@ int32_t get_q1density(
 
 // two qubit density matrix computation
 __global__ void _get_q2density(
-  const cuFloatComplex* state,
-  cuFloatComplex* density,
+  const COMPLEX* state,
+  COMPLEX* density,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
 )
 {
-  __shared__ cuFloatComplex cache[16 * THREADS_NUM];
+  __shared__ COMPLEX cache[16 * THREADS_NUM];
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
-  cuFloatComplex tmp[16] = {
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
-    {0., 0.}, {0., 0.}, {0., 0.}, {0., 0.},
+  COMPLEX tmp[16] = {
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
+    {0, 0}, {0, 0}, {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_two_zeros(mask1, mask2, tid);
     TWO_POSITIONS_FOR(
-      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+      tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
-        cuCmulf(
+        MUL(
           state[p2 * stride2 + p1 * stride1 + btid],
-          cuConjf(state[q2 * stride2 + q1 * stride1 + btid])
+          CONJ(state[q2 * stride2 + q1 * stride1 + btid])
         )
       );
     )
@@ -555,7 +570,7 @@ __global__ void _get_q2density(
   while ( s != 0 ) {
     if ( threadIdx.x < s ) {
       TWO_POSITIONS_FOR(
-        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = cuCaddf(
+        cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x] = ADD(
           cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * threadIdx.x],
           cache[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * (threadIdx.x + s)]
         );
@@ -573,16 +588,16 @@ __global__ void _get_q2density(
 
 extern "C"
 int32_t get_q2density(
-  const cuFloatComplex* state,
-  cuFloatComplex* density,
+  const COMPLEX* state,
+  COMPLEX* density,
   size_t pos2,
   size_t pos1,
   size_t qubits_number
 )
 {
-  cuFloatComplex* device_density;
-  cuFloatComplex* host_density;
-  int32_t alloc_status = cudaMalloc(&device_density, 16 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  COMPLEX* device_density;
+  COMPLEX* host_density;
+  int32_t alloc_status = cudaMalloc(&device_density, 16 * BLOCKS_NUM * sizeof(COMPLEX));
   _get_q2density<<<BLOCKS_NUM, THREADS_NUM>>>(
     state,
     device_density,
@@ -590,16 +605,16 @@ int32_t get_q2density(
     pos1,
     qubits_number
   );
-  host_density = (cuFloatComplex*)malloc(16 * BLOCKS_NUM * sizeof(cuFloatComplex));
+  host_density = (COMPLEX*)malloc(16 * BLOCKS_NUM * sizeof(COMPLEX));
   int32_t memcopy_status = cudaMemcpy(
     host_density,
     device_density,
-    16 * BLOCKS_NUM * sizeof(cuFloatComplex),
+    16 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
   );
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     TWO_POSITIONS_FOR(
-      density[8 * p2 + 4 * p1 + 2 * q2 + q1] = cuCaddf(
+      density[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         density[8 * p2 + 4 * p1 + 2 * q2 + q1],
         host_density[8 * p2 + 4 * p1 + 2 * q2 + q1 + 16 * i]
       );
@@ -616,8 +631,8 @@ int32_t get_q2density(
 
 // copy of a state
 __global__ void _copy(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
@@ -627,8 +642,8 @@ __global__ void _copy(
 
 extern "C"
 void copy(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
@@ -641,8 +656,8 @@ void copy(
 
 // primitives to pass gradient through the density matrix computation 
 __global__ void _conj_and_double(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
@@ -655,8 +670,8 @@ __global__ void _conj_and_double(
 
 extern "C"
 void conj_and_double(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
@@ -668,19 +683,19 @@ void conj_and_double(
 }
 
 __global__ void _add(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  PARALLEL_FOR(tid, size, dst[tid] = cuCaddf(dst[tid], src[tid]);)
+  PARALLEL_FOR(tid, size, dst[tid] = ADD(dst[tid], src[tid]);)
 }
 
 extern "C"
 void add(
-  const cuFloatComplex* src,
-  cuFloatComplex* dst,
+  const COMPLEX* src,
+  COMPLEX* dst,
   size_t qubits_number
 )
 {
@@ -690,3 +705,78 @@ void add(
     qubits_number
   );
 }
+
+///////////////////////////////////////////////////////////////////
+
+#ifdef CHECK
+  #include <cassert>
+  #include <stdio.h>
+  int main() {
+    int qubits_number = 21;
+    COMPLEX* state;
+    COMPLEX* host_state;
+    host_state = (COMPLEX*)malloc((1 << qubits_number) * sizeof(COMPLEX));
+    get_state(&state, qubits_number);
+    set2standard(state, qubits_number);
+    COMPLEX hadamard[4] = {
+      {1 / sqrt(2.f), 0}, {1 / sqrt(2.f), 0},
+      {1 / sqrt(2.f), 0}, {-1 / sqrt(2.f), 0}
+    };
+    COMPLEX cnot[16] = {
+      {1, 0}, {0, 0}, {0, 0}, {0, 0},
+      {0, 0}, {1, 0}, {0, 0}, {0, 0},
+      {0, 0}, {0, 0}, {0, 0}, {1, 0},
+      {0, 0}, {0, 0}, {1, 0}, {0, 0}
+    };
+    q1gate(state, hadamard, 0, qubits_number);
+    for (int i = 0; i < qubits_number - 1; i++) {
+      q2gate(state, cnot, i, i+1, qubits_number);
+    }
+    copy_to_host(state, host_state, qubits_number);
+    assert(ABS(SUB(host_state[0], COMPLEXNEW(1 / sqrt(2.f), 0))) < 1e-5);
+    assert(ABS(SUB(host_state[(1 << qubits_number)-1], COMPLEXNEW(1 / sqrt(2.f), 0))) < 1e-5);
+    for (size_t i = 1; i < (1 << qubits_number) - 1; i++) {
+      assert(ABS(SUB(host_state[i], COMPLEXNEW(0, 0))) < 1e-5);
+    }
+    for (int i = 0; i < qubits_number; i++) {
+      COMPLEX q1density[4] = {
+        {0, 0}, {0, 0},
+        {0, 0}, {0, 0}
+      };
+      get_q1density(state, q1density, i, qubits_number);
+      assert(ABS(SUB(q1density[0], COMPLEXNEW(0.5f, 0))) < 1e-5);
+      assert(ABS(SUB(q1density[1], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q1density[2], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q1density[3], COMPLEXNEW(0.5f, 0))) < 1e-5);
+    }
+    for (int i = 0; i < qubits_number-1; i++) {
+      COMPLEX q2density[16] = {
+        {0, 0}, {0, 0}, {0, 0}, {0, 0},
+        {0, 0}, {0, 0}, {0, 0}, {0, 0},
+        {0, 0}, {0, 0}, {0, 0}, {0, 0},
+        {0, 0}, {0, 0}, {0, 0}, {0, 0},
+      };
+      get_q2density(state, q2density, i, i+1, qubits_number);
+      assert(ABS(SUB(q2density[0], COMPLEXNEW(0.5f, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[1], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[2], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[3], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[4], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[5], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[6], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[7], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[8], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[9], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[10], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[11], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[12], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[13], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[14], COMPLEXNEW(0, 0))) < 1e-5);
+      assert(ABS(SUB(q2density[15], COMPLEXNEW(0.5f, 0))) < 1e-5);
+    }
+    printf("OK!\n");
+    drop_state(state);
+    delete[] host_state;
+    return 0;
+  }
+#endif

@@ -20,3 +20,7 @@ ndarray-rand = "0.14.0"
 [build-dependencies]
 cc = "1.0"
 bindgen = "0.60.1"
+
+[features]
+default = []
+f64 = []

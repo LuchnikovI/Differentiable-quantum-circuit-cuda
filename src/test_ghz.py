@@ -1,5 +1,6 @@
 from jax.config import config
 config.update('jax_platform_name', 'cpu')
+config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 from src import AutoGradCircuit
 
@@ -7,8 +8,8 @@ def test_ghz():
   qubits_number = 21  # number of qubits in a circuit
 
   # cnot gate
-  cnot = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex64)
-  hadamard = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex64) * (1 / jnp.sqrt(2))
+  cnot = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex128)
+  hadamard = jnp.array([[1, 1], [1, -1]], dtype=jnp.complex128) * (1 / jnp.sqrt(2))
 
   c = AutoGradCircuit(qubits_number)
 

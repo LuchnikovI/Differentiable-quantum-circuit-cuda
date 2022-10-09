@@ -3,7 +3,6 @@ use pyo3::prelude::{
   pyclass,
   pymethods,
   Python,
-  PyCell,
   pymodule,
   PyResult,
   PyModule,
@@ -13,7 +12,12 @@ use numpy::{
   PyReadonlyArray1,
   PyArray2,
 };
-use num_complex::Complex32;
+use num_complex;
+use std::os::raw::{
+  c_double,
+  c_float,
+};
+
 use std::iter::zip;
 
 use super::{
@@ -23,7 +27,16 @@ use super::{
   data_transfer,
 };
 
-fn np_matrix_from_slice<'py>(slice: &[Complex32], py: Python<'py>) -> &'py PyArray2<Complex32> {
+#[cfg(not(feature = "f64"))]
+type Complex = num_complex::Complex<c_float>;
+#[cfg(feature = "f64")]
+type Complex = num_complex::Complex<c_double>;
+#[cfg(not(feature = "f64"))]
+type Float = c_float;
+#[cfg(feature = "f64")]
+type Float = c_double;
+
+fn np_matrix_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray2<Complex> {
   let size = (slice.len() as f64).sqrt() as usize;
   assert_eq!(size * size, slice.len(), "Matrix is not square.");
   let nparr = unsafe { PyArray2::new(py, (size, size), false) };
@@ -78,7 +91,7 @@ impl Circuit {
       state: state,
     }
   }
-  fn set_state_from_vector(&mut self, vector: PyReadonlyArray1<Complex32>) {
+  fn set_state_from_vector(&mut self, vector: PyReadonlyArray1<Complex>) {
     self.initial_state.set_from_host(vector.as_slice().unwrap());
   }
   fn add_q2_const_gate(&mut self, pos2: usize, pos1: usize) {
@@ -115,10 +128,10 @@ impl Circuit {
 
   fn run<'py>(
     &mut self,
-    const_gates: Vec<PyReadonlyArray2<Complex32>>,
-    var_gates: Vec<PyReadonlyArray2<Complex32>>,
+    const_gates: Vec<PyReadonlyArray2<Complex>>,
+    var_gates: Vec<PyReadonlyArray2<Complex>>,
     py: Python<'py>,
-  ) -> Vec<&'py PyArray2<Complex32>> {
+  ) -> Vec<&'py PyArray2<Complex>> {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
     let mut density_matrices = Vec::new();
     let mut const_gates = VecDeque::from(const_gates);
@@ -157,10 +170,10 @@ impl Circuit {
 
   fn forward<'py>(
     &mut self,
-    const_gates: Vec<PyReadonlyArray2<Complex32>>,
-    var_gates: Vec<PyReadonlyArray2<Complex32>>,
+    const_gates: Vec<PyReadonlyArray2<Complex>>,
+    var_gates: Vec<PyReadonlyArray2<Complex>>,
     py: Python<'py>,
-  ) -> Vec<&'py PyArray2<Complex32>>
+  ) -> Vec<&'py PyArray2<Complex>>
   {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
     let mut density_matrices = Vec::new();
@@ -201,11 +214,11 @@ impl Circuit {
 
   fn backward<'py>(
     &mut self,
-    mut grads_wrt_density: Vec<PyReadonlyArray2<Complex32>>,
-    mut const_gates: Vec<PyReadonlyArray2<Complex32>>,
-    mut var_gates: Vec<PyReadonlyArray2<Complex32>>,
+    mut grads_wrt_density: Vec<PyReadonlyArray2<Complex>>,
+    mut const_gates: Vec<PyReadonlyArray2<Complex>>,
+    mut var_gates: Vec<PyReadonlyArray2<Complex>>,
     py: Python<'py>,
-  ) -> Vec<&'py PyArray2<Complex32>>
+  ) -> Vec<&'py PyArray2<Complex>>
   {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
     let fwd = &mut self.state;
@@ -238,8 +251,8 @@ impl Circuit {
             bwd_option = Some(bwd);
           } else {
             grads_wrt_gates.push_front(np_matrix_from_slice(&[
-              Complex32::new(0., 0.), Complex32::new(0., 0.),
-              Complex32::new(0., 0.), Complex32::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.),
             ], py));
           }
         },
@@ -252,23 +265,23 @@ impl Circuit {
             bwd_option = Some(bwd);
           } else {
             grads_wrt_gates.push_front(np_matrix_from_slice(&[
-              Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
-              Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
-              Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
-              Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.), Complex32::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
             ], py));
           }
         },
         Instruction::DiffQ1Density(pos) => {
           if let Some(mut bwd) = bwd_option.take() {
             let grad = grads_wrt_density.pop().expect("The number of gradients wrt density matrices is less than required.");
-            let mut bwd_addition = fwd.get_conj_half();
+            let mut bwd_addition = fwd.conj_and_double();
             bwd_addition.apply_q1_gate_tr(grad.as_slice().expect("Gradient is not contiguous."), *pos);
             bwd.add(bwd_addition);
             bwd_option = Some(bwd);
           } else {
             let grad = grads_wrt_density.pop().expect("The number of gradients wrt density matrices is less than required.");
-            let mut bwd_addition = fwd.get_conj_half();
+            let mut bwd_addition = fwd.conj_and_double();
             bwd_addition.apply_q1_gate_tr(grad.as_slice().expect("Gradient is not contiguous."), *pos);
             bwd_option = Some(bwd_addition);
           }
@@ -276,13 +289,13 @@ impl Circuit {
         Instruction::DiffQ2Density((pos2, pos1)) => {
           if let Some(mut bwd) = bwd_option.take() {
             let grad = grads_wrt_density.pop().expect("The number of gradients wrt density matrices is less than required.");
-            let mut bwd_addition = fwd.get_conj_half();
+            let mut bwd_addition = fwd.conj_and_double();
             bwd_addition.apply_q2_gate_tr(grad.as_slice().expect("Gradient is not contiguous."), *pos2, *pos1);
             bwd.add(bwd_addition);
             bwd_option = Some(bwd);
           } else {
             let grad = grads_wrt_density.pop().expect("The number of gradients wrt density matrices is less than required.");
-            let mut bwd_addition = fwd.get_conj_half();
+            let mut bwd_addition = fwd.conj_and_double();
             bwd_addition.apply_q2_gate_tr(grad.as_slice().expect("Gradient is not contiguous."), *pos2, *pos1);
             bwd_option = Some(bwd_addition);
           }

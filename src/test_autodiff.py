@@ -1,6 +1,7 @@
 from jax.config import config
-from jax.test_util import check_grads
 config.update('jax_platform_name', 'cpu')
+config.update("jax_enable_x64", True)
+from jax.test_util import check_grads
 import jax.numpy as jnp
 from jax import random
 from jax import grad
@@ -9,16 +10,16 @@ from src import AutoGradCircuit
 def test_autodiff():
   layers = 10  # number of layers in a circuit
   qubits_number = 15  # number of qubits in a circuit
-  eta = 0.001  # perturbation step
+  eta = 1e-6  # perturbation step
 
-  key = random.PRNGKey(42341)
+  key = random.PRNGKey(42)
 
   # initial state
-  initial_state = jnp.zeros(2 ** qubits_number, dtype=jnp.complex64)
+  initial_state = jnp.zeros(2 ** qubits_number, dtype=jnp.complex128)
   initial_state = initial_state.at[0].set(1.)
 
   # cnot gate
-  cnot = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex64)
+  cnot = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1], [0, 0, 1, 0]], dtype=jnp.complex128)
 
   # random unitary matrix generator
   def random_unitary(key: random.PRNGKey, size: int):
@@ -121,4 +122,4 @@ def test_autodiff():
   for (p, g) in zip(gates_perturbation, gates_grad):
     ds += jnp.tensordot(g, p, axes = [[0, 1], [0, 1]]).real
 
-  assert(jnp.abs(ds - ds_finite) / min(jnp.abs(ds), jnp.abs(ds_finite)) < 1e-4)
+  assert(jnp.abs(ds - ds_finite) / min(jnp.abs(ds), jnp.abs(ds_finite)) < 1e-9)
