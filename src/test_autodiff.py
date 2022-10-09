@@ -5,7 +5,7 @@ from jax.test_util import check_grads
 import jax.numpy as jnp
 from jax import random
 from jax import grad
-from src import AutoGradCircuit
+from qdc import AutoGradCircuit
 
 def test_autodiff():
   layers = 10  # number of layers in a circuit

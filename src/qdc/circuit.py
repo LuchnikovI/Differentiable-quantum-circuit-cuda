@@ -3,7 +3,7 @@ from jax import custom_vjp
 import jax.numpy as jnp
 from typing import Callable, List, Tuple
 
-from differentiable_circuit import Circuit
+from quantum_differentiable_circuit import Circuit
 
 class AutoGradCircuit:
 

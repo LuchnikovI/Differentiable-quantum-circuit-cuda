@@ -312,7 +312,7 @@ impl Circuit {
 }
 
 #[pymodule]
-fn differentiable_circuit(py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn quantum_differentiable_circuit(py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Circuit>()?;
     Ok(())
 }

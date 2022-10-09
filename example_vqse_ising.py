@@ -1,7 +1,7 @@
 from jax.config import config
 config.update('jax_platform_name', 'cpu')
 import jax.numpy as jnp
-from circuit import AutoGradCircuit
+from qde import AutoGradCircuit
 from typing import List
 from scipy.optimize import minimize
 import numpy as np

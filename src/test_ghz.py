@@ -2,7 +2,7 @@ from jax.config import config
 config.update('jax_platform_name', 'cpu')
 config.update("jax_enable_x64", True)
 import jax.numpy as jnp
-from src import AutoGradCircuit
+from qdc import AutoGradCircuit
 
 def test_ghz():
   qubits_number = 21  # number of qubits in a circuit
