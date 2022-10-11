@@ -4,7 +4,7 @@ use std::env;
 macro_rules! cuda_flags {
     ($builder:expr) => {
       $builder
-        .flag("-arch=sm_80")
+        .flag("-arch=sm_86")
         .file("src/primitives.cu")
         .compile("libprimitives.a");
     };

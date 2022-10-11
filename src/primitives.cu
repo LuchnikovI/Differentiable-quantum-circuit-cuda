@@ -780,3 +780,19 @@ void add(
     return 0;
   }
 #endif
+
+#ifdef GPU_PROPERTIES
+  #include <stdio.h>
+  int main() {
+    cudaDeviceProp prop;
+    int device_number;
+    int getdevice_status = cudaGetDevice(&device_number);
+    int getdeviceproperties_status = cudaGetDeviceProperties(&prop, device_number);
+    if ( getdevice_status != 0) { printf("During 'cudaGetDevice' function call an error with code %d has occurred.", getdevice_status); }
+    if ( getdeviceproperties_status != 0) { printf("During 'cudaGetDeviceProperties' function call an error with code %d has occurred.", getdevice_status); }
+    printf("Major compute capability: %d\n", prop.major);
+    printf("Minor compute capability: %d\n", prop.minor);
+    printf("Global memory available in bytes: %d\n", prop.totalGlobalMem);
+    return 0;
+  }
+#endif
