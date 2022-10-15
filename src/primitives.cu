@@ -24,36 +24,37 @@
 #endif
 
 // macro definitions of the most used for loops
-#define PARALLEL_FOR(index, stop_index, ...)            \
-  for (                                                 \
-    size_t tid = threadIdx.x + blockIdx.x * blockDim.x; \
-    index < stop_index;                                 \
-    index += blockDim.x * gridDim.x                     \
-  )                                                     \
-  {                                                     \
-    __VA_ARGS__                                         \
+#define PARALLEL_FOR(index, stop_index, ...)              \
+  for (                                                   \
+    size_t index = threadIdx.x + blockIdx.x * blockDim.x; \
+    index < stop_index;                                   \
+    index += blockDim.x * gridDim.x                       \
+  )                                                       \
+  {                                                       \
+    __VA_ARGS__                                           \
   }
 
-#define ONE_POSITION_FOR(...)                           \
-  for (int q = 0; q < 2; q++) {                         \
-    for (int p = 0; p < 2; p++) {                       \
-      __VA_ARGS__                                       \
-    }                                                   \
+#define ONE_POSITION_FOR(...)                             \
+  for (int q = 0; q < 2; q++) {                           \
+    for (int p = 0; p < 2; p++) {                         \
+      __VA_ARGS__                                         \
+    }                                                     \
   }
 
-#define TWO_POSITIONS_FOR(...)                          \
-  for (int q1 = 0; q1 < 2; q1++) {                      \
-    for (int q2 = 0; q2 < 2; q2++) {                    \
-      for (int p1 = 0; p1 < 2; p1++) {                  \
-        for (int p2 = 0; p2 < 2; p2++) {                \
-          __VA_ARGS__                                   \
-        }                                               \
-      }                                                 \
-    }                                                   \
+#define TWO_POSITIONS_FOR(...)                            \
+  for (int q1 = 0; q1 < 2; q1++) {                        \
+    for (int q2 = 0; q2 < 2; q2++) {                      \
+      for (int p1 = 0; p1 < 2; p1++) {                    \
+        for (int p2 = 0; p2 < 2; p2++) {                  \
+          __VA_ARGS__                                     \
+        }                                                 \
+      }                                                   \
+    }                                                     \
   }
 
 __constant__ COMPLEX q1g[4];
 __constant__ COMPLEX q2g[16];
+__constant__ COMPLEX q2dg[4];
 
 // utility functions necessary to traverse a state
 __device__ size_t insert_zero(
@@ -233,7 +234,7 @@ int q1grad (
   return 0;
 }
 
-// computes q2 hate gradient from fwd and bwd "states"
+// computes q2 gate gradient from fwd and bwd "states"
 __global__ void _q2grad (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
@@ -337,6 +338,105 @@ int q2grad (
   return 0;
 }
 
+// computes q2 diagonal gate gradient from fwd and bwd "states"
+__global__ void _q2grad_diag (
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
+  size_t pos2,
+  size_t pos1,
+  size_t qubits_number
+)
+{
+  __shared__ COMPLEX cache[4 * THREADS_NUM];
+  size_t size = 1 << qubits_number;
+  size_t mask1 =  SIZE_MAX << pos1;
+  size_t mask2 =  SIZE_MAX << pos2;
+  size_t stride1 = 1 << pos1;
+  size_t stride2 = 1 << pos2;
+  size_t batch_size = size >> 2;
+  COMPLEX tmp[4] = { {0, 0}, {0, 0}, {0, 0}, {0, 0} };
+  PARALLEL_FOR(tid, batch_size,
+    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    ONE_POSITION_FOR(
+      tmp[2 * p + q] = ADD(
+        tmp[2 * p + q],
+        MUL(
+          bwd[p * stride2 + q * stride1 + btid],
+          fwd[p * stride2 + q * stride1 + btid]
+        )
+      );
+    )
+  )
+  ONE_POSITION_FOR(
+    cache[2 * p + q + 4 * threadIdx.x] = tmp[2 * p + q];
+  )
+  __syncthreads();
+  int s = THREADS_NUM / 2;
+  while ( s != 0 ) {
+    if ( threadIdx.x < s ) {
+      ONE_POSITION_FOR(
+        cache[2 * p + q + 4 * threadIdx.x] = ADD(
+          cache[2 * p + q + 4 * threadIdx.x],
+          cache[2 * p + q + 4 * (threadIdx.x + s)]
+        );
+      )
+    }
+    __syncthreads();
+    s /= 2;
+  }
+  if (threadIdx.x == 0) {
+    ONE_POSITION_FOR(
+      grad[2 * p + q + 4 * blockIdx.x] = cache[2 * p + q];
+    )
+  }
+}
+
+extern "C"
+int q2grad_diag (
+  const COMPLEX* fwd,
+  const COMPLEX* bwd,
+  COMPLEX* grad,
+  size_t pos2,
+  size_t pos1,
+  size_t qubits_number
+)
+{
+  COMPLEX* device_grad;
+  COMPLEX* host_grad;
+  int32_t alloc_status = cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX));
+  _q2grad_diag<<<BLOCKS_NUM, THREADS_NUM>>>(
+    fwd,
+    bwd,
+    device_grad,
+    pos2,
+    pos1,
+    qubits_number
+  );
+  host_grad = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
+  int32_t memcopy_status = cudaMemcpy(
+    host_grad,
+    device_grad,
+    4 * BLOCKS_NUM * sizeof(COMPLEX),
+    cudaMemcpyDeviceToHost
+  );
+  for (int i = 0; i < BLOCKS_NUM; i ++) {
+    ONE_POSITION_FOR(
+      grad[2 * p + q] = ADD(
+        grad[2 * p + q],
+        host_grad[2 * p + q + 4 * i]
+      );
+    )
+  }
+  delete[] host_grad;
+  int32_t free_status = cudaFree(device_grad);
+  // return the first error code
+  if ( alloc_status != 0 ) return alloc_status;
+  if ( memcopy_status != 0 ) return memcopy_status;
+  if ( free_status != 0 ) return free_status;
+  return 0;
+}
+
 // sets state from host
 extern "C"
 int32_t set_from_host (
@@ -362,15 +462,12 @@ __global__ void _q1gate(
   size_t batch_size = size >> 1;
   PARALLEL_FOR(tid, batch_size,
     size_t btid = insert_zero(mask, tid);
-    COMPLEX tmp = ADD(
-      MUL(q1g[0], state[btid]),
-      MUL(q1g[1], state[btid + stride])
-    );
-    state[stride + btid] = ADD(
-      MUL(q1g[2], state[btid]),
-      MUL(q1g[3], state[btid + stride])
-    );
-    state[btid] = tmp;
+    COMPLEX tmp[2] = { {0, 0}, {0, 0} };
+    ONE_POSITION_FOR(
+      tmp[p] = ADD(tmp[p], MUL(q1g[2 * p + q], state[stride * q + btid]));
+    )
+    state[btid] = tmp[0];
+    state[btid + stride] = tmp[1];
   )
 }
 
@@ -431,6 +528,43 @@ int32_t q2gate(
 {
   int32_t copy_status = cudaMemcpyToSymbol(q2g, gate, 16 * sizeof(COMPLEX));
   _q2gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
+  return copy_status;
+}
+
+// two qubits diagonal gate application
+__global__ void _q2gate_diag(
+  COMPLEX* state,
+  size_t pos2,
+  size_t pos1,
+  size_t qubits_number
+)
+{
+  size_t size = 1 << qubits_number;
+  size_t mask1 =  SIZE_MAX << pos1;
+  size_t mask2 =  SIZE_MAX << pos2;
+  size_t stride1 = 1 << pos1;
+  size_t stride2 = 1 << pos2;
+  size_t batch_size = size >> 2;
+  PARALLEL_FOR(tid, batch_size,
+    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    state[btid] = MUL(q2dg[0], state[btid]);
+    state[btid + stride1] = MUL(q2dg[1], state[btid + stride1]);
+    state[btid + stride2] = MUL(q2dg[2], state[btid + stride2]);
+    state[btid + stride1 + stride2] = MUL(q2dg[3], state[btid + stride1 + stride2]);
+  )
+}
+
+extern "C"
+int32_t q2gate_diag(
+  COMPLEX* state,
+  const COMPLEX* gate,
+  size_t pos2,
+  size_t pos1,
+  size_t qubits_number
+)
+{
+  int32_t copy_status = cudaMemcpyToSymbol(q2dg, gate, 4 * sizeof(COMPLEX));
+  _q2gate_diag<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
   return copy_status;
 }
 
@@ -728,10 +862,16 @@ void add(
       {0, 0}, {0, 0}, {0, 0}, {1, 0},
       {0, 0}, {0, 0}, {1, 0}, {0, 0}
     };
+    COMPLEX diag_cz[4] = { {1, 0}, {1, 0}, {1, 0}, {-1, 0} };
     q1gate(state, hadamard, 0, qubits_number);
-    for (int i = 0; i < qubits_number - 1; i++) {
+    for (int i = 0; i < qubits_number - 2; i++) {
       q2gate(state, cnot, i, i+1, qubits_number);
     }
+    // cnot decomposition //
+    q1gate(state, hadamard, qubits_number-1, qubits_number);
+    q2gate_diag(state, diag_cz, qubits_number-2, qubits_number-1, qubits_number);
+    q1gate(state, hadamard, qubits_number-1, qubits_number);
+    ////////////////////////
     copy_to_host(state, host_state, qubits_number);
     assert(ABS(SUB(host_state[0], COMPLEXNEW(1 / sqrt(2.f), 0))) < 1e-5);
     assert(ABS(SUB(host_state[(1 << qubits_number)-1], COMPLEXNEW(1 / sqrt(2.f), 0))) < 1e-5);

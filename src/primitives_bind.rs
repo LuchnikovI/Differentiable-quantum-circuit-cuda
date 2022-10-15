@@ -37,6 +37,13 @@ extern "C" {
     pos1: usize,
     qubits_number: usize,
   ) -> i32;
+  pub(super) fn q2gate_diag(
+    state: *mut Complex,
+    gate: *const Complex,
+    pos2: usize,
+    pos1: usize,
+    qubits_number: usize,
+  ) -> i32;
   pub(super) fn set_from_host (
     device_state: *mut Complex,
     host_state: *const Complex,
@@ -63,6 +70,14 @@ extern "C" {
     qubits_number: usize,
   ) -> i32;
   pub(super) fn q2grad (
+    fwd: *const Complex,
+    bwd: *const Complex,
+    grad: *mut Complex,
+    pos2: usize,
+    pos1: usize,
+    qubits_number: usize,
+  ) -> i32;
+  pub(super) fn q2grad_diag (
     fwd: *const Complex,
     bwd: *const Complex,
     grad: *mut Complex,
