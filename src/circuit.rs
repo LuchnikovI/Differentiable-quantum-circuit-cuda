@@ -8,15 +8,18 @@ use pyo3::prelude::{
   PyModule,
 };
 use numpy::{
-  PyReadonlyArray2,
   PyReadonlyArray1,
+  PyReadonlyArray2,
   PyArray2,
+  PyArray1,
 };
 use num_complex;
-use std::os::raw::{
-  c_double,
-  c_float,
-};
+
+#[cfg(not(feature = "f64"))]
+use std::os::raw::c_float;
+
+#[cfg(feature = "f64")]
+use std::os::raw::c_double;
 
 use std::iter::zip;
 
@@ -32,10 +35,15 @@ use super::{
 type Complex = num_complex::Complex<c_float>;
 #[cfg(feature = "f64")]
 type Complex = num_complex::Complex<c_double>;
-#[cfg(not(feature = "f64"))]
-type Float = c_float;
-#[cfg(feature = "f64")]
-type Float = c_double;
+
+fn np_array_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray1<Complex> {
+  let size = slice.len();
+  let nparr = unsafe { PyArray1::new(py, size, false) };
+  zip(unsafe { nparr.as_slice_mut().unwrap().into_iter() }, slice).for_each(|(dst, src)| {
+    *dst = *src;
+  });
+  nparr
+}
 
 fn np_matrix_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray2<Complex> {
   let size = (slice.len() as f64).sqrt() as usize;
@@ -50,6 +58,8 @@ fn np_matrix_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray
 enum Instruction {
   ConstQ2Gate((usize, usize)),
   VarQ2Gate((usize, usize)),
+  ConstQ2GateDiag((usize, usize)),
+  VarQ2GateDiag((usize, usize)),
   ConstQ1Gate(usize),
   VarQ1Gate(usize),
   Q2Density((usize, usize)),
@@ -95,12 +105,21 @@ impl Circuit {
   fn set_state_from_vector(&mut self, vector: PyReadonlyArray1<Complex>) {
     self.initial_state.set_from_host(vector.as_slice().unwrap());
   }
+
   fn add_q2_const_gate(&mut self, pos2: usize, pos1: usize) {
     self.instructions.push(Instruction::ConstQ2Gate((pos2, pos1)))
   }
 
+  fn add_q2_const_gate_diag(&mut self, pos2: usize, pos1: usize) {
+    self.instructions.push(Instruction::ConstQ2GateDiag((pos2, pos1)))
+  }
+
   fn add_q2_var_gate(&mut self, pos2: usize, pos1: usize) {
     self.instructions.push(Instruction::VarQ2Gate((pos2, pos1)))
+  }
+
+  fn add_q2_var_gate_diag(&mut self, pos2: usize, pos1: usize) {
+    self.instructions.push(Instruction::VarQ2GateDiag((pos2, pos1)))
   }
 
   fn add_q1_const_gate(&mut self, pos: usize) {
@@ -129,8 +148,8 @@ impl Circuit {
 
   fn run<'py>(
     &mut self,
-    const_gates: Vec<PyReadonlyArray2<Complex>>,
-    var_gates: Vec<PyReadonlyArray2<Complex>>,
+    const_gates: Vec<PyReadonlyArray1<Complex>>,
+    var_gates: Vec<PyReadonlyArray1<Complex>>,
     py: Python<'py>,
   ) -> Vec<&'py PyArray2<Complex>> {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
@@ -148,6 +167,10 @@ impl Circuit {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
+        Instruction::ConstQ2GateDiag((pos2, pos1)) => {
+          let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
+          self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+        },
         Instruction::VarQ1Gate(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
@@ -155,6 +178,10 @@ impl Circuit {
         Instruction::VarQ2Gate((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+        },
+        Instruction::VarQ2GateDiag((pos2, pos1)) => {
+          let gate = var_gates.pop_front().expect("The number of constant gates is less than required.");
+          self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::Q1Density(pos) | Instruction::DiffQ1Density(pos)=> {
           density_matrices.push(np_matrix_from_slice(&self.state.get_q1_density(*pos)[..], py));
@@ -171,8 +198,8 @@ impl Circuit {
 
   fn forward<'py>(
     &mut self,
-    const_gates: Vec<PyReadonlyArray2<Complex>>,
-    var_gates: Vec<PyReadonlyArray2<Complex>>,
+    const_gates: Vec<PyReadonlyArray1<Complex>>,
+    var_gates: Vec<PyReadonlyArray1<Complex>>,
     py: Python<'py>,
   ) -> Vec<&'py PyArray2<Complex>>
   {
@@ -191,6 +218,10 @@ impl Circuit {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
+        Instruction::ConstQ2GateDiag((pos2, pos1)) => {
+          let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
+          self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+        },
         Instruction::VarQ1Gate(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
@@ -198,6 +229,10 @@ impl Circuit {
         Instruction::VarQ2Gate((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+        },
+        Instruction::VarQ2GateDiag((pos2, pos1)) => {
+          let gate = var_gates.pop_front().expect("The number of constant gates is less than required.");
+          self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
         Instruction::DiffQ1Density(pos)=> {
           density_matrices.push(np_matrix_from_slice(&self.state.get_q1_density(*pos)[..], py));
@@ -216,10 +251,10 @@ impl Circuit {
   fn backward<'py>(
     &mut self,
     mut grads_wrt_density: Vec<PyReadonlyArray2<Complex>>,
-    mut const_gates: Vec<PyReadonlyArray2<Complex>>,
-    mut var_gates: Vec<PyReadonlyArray2<Complex>>,
+    mut const_gates: Vec<PyReadonlyArray1<Complex>>,
+    mut var_gates: Vec<PyReadonlyArray1<Complex>>,
     py: Python<'py>,
-  ) -> Vec<&'py PyArray2<Complex>>
+  ) -> Vec<&'py PyArray1<Complex>>
   {
     assert!(!self.instructions.is_empty(), "The circuit is empty.");
     let fwd = &mut self.state;
@@ -243,15 +278,23 @@ impl Circuit {
             bwd_option = Some(bwd);
           }
         },
+        Instruction::ConstQ2GateDiag((pos2, pos1)) => {
+          let gate = const_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q2_gate_diag_conj(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          if let Some(mut bwd) = bwd_option.take() {
+            bwd.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+            bwd_option = Some(bwd);
+          }
+        },
         Instruction::VarQ1Gate(pos) => {
           let gate = var_gates.pop().expect("The number of gates is less than required.");
           fwd.apply_q1_gate_conj_tr(gate.as_slice().expect("Gate is not contiguous."), *pos);
           if let Some(mut bwd) = bwd_option.take() {
-            grads_wrt_gates.push_front(np_matrix_from_slice(&get_q1_grad(&fwd, &bwd, *pos)[..], py));
+            grads_wrt_gates.push_front(np_array_from_slice(&get_q1_grad(&fwd, &bwd, *pos)[..], py));
             bwd.apply_q1_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos);
             bwd_option = Some(bwd);
           } else {
-            grads_wrt_gates.push_front(np_matrix_from_slice(&[
+            grads_wrt_gates.push_front(np_array_from_slice(&[
               Complex::new(0., 0.), Complex::new(0., 0.),
               Complex::new(0., 0.), Complex::new(0., 0.),
             ], py));
@@ -261,14 +304,27 @@ impl Circuit {
           let gate = var_gates.pop().expect("The number of gates is less than required.");
           fwd.apply_q2_gate_conj_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
           if let Some(mut bwd) = bwd_option.take() {
-            grads_wrt_gates.push_front(np_matrix_from_slice(&get_q2_grad(&fwd, &bwd, *pos2, *pos1)[..], py));
+            grads_wrt_gates.push_front(np_array_from_slice(&get_q2_grad(&fwd, &bwd, *pos2, *pos1)[..], py));
             bwd.apply_q2_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
             bwd_option = Some(bwd);
           } else {
-            grads_wrt_gates.push_front(np_matrix_from_slice(&[
+            grads_wrt_gates.push_front(np_array_from_slice(&[
               Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
               Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
               Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+            ], py));
+          }
+        },
+        Instruction::VarQ2GateDiag((pos2, pos1)) => {
+          let gate = var_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q2_gate_diag_conj(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          if let Some(mut bwd) = bwd_option.take() {
+            grads_wrt_gates.push_front(np_array_from_slice(&get_q2_grad_diag(&fwd, &bwd, *pos2, *pos1)[..], py));
+            bwd.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+            bwd_option = Some(bwd);
+          } else {
+            grads_wrt_gates.push_front(np_array_from_slice(&[
               Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
             ], py));
           }
@@ -313,7 +369,7 @@ impl Circuit {
 }
 
 #[pymodule]
-fn quantum_differentiable_circuit(py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn quantum_differentiable_circuit(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<Circuit>()?;
     Ok(())
 }

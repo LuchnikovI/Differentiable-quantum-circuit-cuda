@@ -1,8 +1,11 @@
 use num_complex;
-use std::os::raw::{
-  c_double,
-  c_float,
-};
+
+#[cfg(not(feature = "f64"))]
+use std::os::raw::c_float;
+
+#[cfg(feature = "f64")]
+use std::os::raw::c_double;
+
 use std::iter::zip;
 
 #[cfg(not(feature = "f64"))]
@@ -14,6 +17,7 @@ type Float = c_float;
 #[cfg(feature = "f64")]
 type Float = c_double;
 
+#[allow(dead_code)]
 pub(super) fn cmp_complex_slices<'a>(
   slice1: impl IntoIterator<Item = &'a Complex>,
   slice2: impl IntoIterator<Item = &'a Complex>,

@@ -11,19 +11,19 @@ import time
 
 # zz interaction two-qubit gate from parameter
 def zz(gamma: jnp.ndarray):
-  return jnp.diag(jnp.array([
+  return jnp.array([
     jnp.exp(-1j * gamma),
     jnp.exp(1j * gamma),
     jnp.exp(1j * gamma),
     jnp.exp(-1j * gamma)
-  ]))
+  ])
 
 # x one-qubit gate from parameter
 def x(beta: jnp.ndarray):
-  return jnp.array([
-    [jnp.cos(beta), -1j * jnp.sin(beta)],
-    [-1j * jnp.sin(beta), jnp.cos(beta)]
-  ])
+  return jnp.array(
+    [jnp.cos(beta), -1j * jnp.sin(beta),
+    -1j * jnp.sin(beta), jnp.cos(beta)]
+    )
 
 # energy value from a two-qubit hamiltonian term and two-qubit density matrices
 @jit
@@ -66,8 +66,8 @@ c.set_state_from_vector(state)
 for _ in range(layers_number):
   # a layer of two-qubit interaction gates
   for i in range(qubits_number-1):
-    c.add_q2_var_gate(i, i+1)
-  c.add_q2_var_gate(0, qubits_number-1)
+    c.add_q2_var_gate_diag(i, i+1)
+  c.add_q2_var_gate_diag(0, qubits_number-1)
   # a layer of one-qubit gates
   for i in range(qubits_number):
     c.add_q1_var_gate(i)

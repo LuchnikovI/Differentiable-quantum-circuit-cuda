@@ -1,8 +1,10 @@
 use num_complex;
-use std::os::raw::{
-  c_double,
-  c_float,
-};
+
+#[cfg(not(feature = "f64"))]
+use std::os::raw::c_float;
+
+#[cfg(feature = "f64")]
+use std::os::raw::c_double;
 
 #[cfg(not(feature = "f64"))]
 type Complex = num_complex::Complex<c_float>;

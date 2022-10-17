@@ -1,8 +1,11 @@
 use num_complex;
-use std::os::raw::{
-  c_double,
-  c_float,
-};
+
+#[cfg(not(feature = "f64"))]
+use std::os::raw::c_float;
+
+#[cfg(feature = "f64")]
+use std::os::raw::c_double;
+
 use super::primitives_bind::{
   copy_to_host,
   set2standard,
@@ -26,10 +29,6 @@ use super::primitives_bind::{
 type Complex = num_complex::Complex<c_float>;
 #[cfg(feature = "f64")]
 type Complex = num_complex::Complex<c_double>;
-#[cfg(not(feature = "f64"))]
-type Float = c_float;
-#[cfg(feature = "f64")]
-type Float = c_double;
 
 fn get_qubits_number(mut size: usize) -> usize {
   assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
@@ -242,6 +241,10 @@ unsafe impl Send for QuantizedTensor {}
 
 #[cfg(test)]
 mod tests {
+  #[cfg(not(feature = "f64"))]
+  type Float = c_float;
+  #[cfg(feature = "f64")]
+  type Float = c_double;
   use super::*;
   use std::iter::zip;
   use super::super::common_gates::*;

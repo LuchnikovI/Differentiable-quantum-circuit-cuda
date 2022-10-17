@@ -31,6 +31,16 @@ class AutoGradCircuit:
     """
     self.circuit.add_q2_const_gate(pos2, pos1)
 
+  def add_q2_const_gate_diag(self, pos2: int, pos1: int):
+    """Adds a diagonal constant two-qubit gate to the circuit.
+    Args:
+      pos2: int, a position of a qubit that is considered as 'control' qubit,
+      pos1: int, a position of a qubit that is conisdered as 'target' qubit.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
+    """
+    self.circuit.add_q2_const_gate_diag(pos2, pos1)
+
   def add_q2_var_gate(self, pos2: int, pos1: int):
     """Adds a variable two-qubit gate to the circuit.
     Args:
@@ -40,6 +50,16 @@ class AutoGradCircuit:
     order).
     """
     self.circuit.add_q2_var_gate(pos2, pos1)
+
+  def add_q2_var_gate_diag(self, pos2: int, pos1: int):
+    """Adds a diagoneal variable two-qubit gate to the circuit.
+    Args:
+      pos2: int, a position of a qubit that is considered as 'control' qubit,
+      pos1: int, a position of a qubit that is conisdered as 'target' qubit.
+    Qubits are enumerated starting from the innermost one (the inverse numpy/jax
+    order).
+    """
+    self.circuit.add_q2_var_gate_diag(pos2, pos1)
 
   def add_q1_const_gate(self, pos: int):
     """Adds a constant one-qubit gate to the circuit.
