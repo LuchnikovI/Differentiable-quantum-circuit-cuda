@@ -58,10 +58,14 @@ fn np_matrix_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray
 enum Instruction {
   ConstQ2Gate((usize, usize)),
   VarQ2Gate((usize, usize)),
+  ConstQ2GateNonU((usize, usize)),
+  VarQ2GateNonU((usize, usize)),
   ConstQ2GateDiag((usize, usize)),
   VarQ2GateDiag((usize, usize)),
   ConstQ1Gate(usize),
+  ConstQ1GateNonU(usize),
   VarQ1Gate(usize),
+  VarQ1GateNonU(usize),
   Q2Density((usize, usize)),
   Q1Density(usize),
   DiffQ2Density((usize, usize)),
@@ -114,6 +118,10 @@ impl Circuit {
     self.instructions.push(Instruction::ConstQ2GateDiag((pos2, pos1)))
   }
 
+  fn add_q2_const_gate_nonu(&mut self, pos2: usize, pos1: usize) {
+    self.instructions.push(Instruction::ConstQ2GateNonU((pos2, pos1)))
+  }
+
   fn add_q2_var_gate(&mut self, pos2: usize, pos1: usize) {
     self.instructions.push(Instruction::VarQ2Gate((pos2, pos1)))
   }
@@ -122,12 +130,24 @@ impl Circuit {
     self.instructions.push(Instruction::VarQ2GateDiag((pos2, pos1)))
   }
 
+  fn add_q2_var_gate_nonu(&mut self, pos2: usize, pos1: usize) {
+    self.instructions.push(Instruction::VarQ2GateNonU((pos2, pos1)))
+  }
+
   fn add_q1_const_gate(&mut self, pos: usize) {
     self.instructions.push(Instruction::ConstQ1Gate(pos))
   }
 
+  fn add_q1_const_gate_nonu(&mut self, pos: usize) {
+    self.instructions.push(Instruction::ConstQ1GateNonU(pos))
+  }
+
   fn add_q1_var_gate(&mut self, pos: usize) {
     self.instructions.push(Instruction::VarQ1Gate(pos))
+  }
+
+  fn add_q1_var_gate_nonu(&mut self, pos: usize) {
+    self.instructions.push(Instruction::VarQ1GateNonU(pos))
   }
 
   fn get_q2_dens_op(&mut self, pos2: usize, pos1: usize) {
@@ -159,11 +179,11 @@ impl Circuit {
     data_transfer(&self.initial_state, &mut self.state);
     for inst in &self.instructions {
       match inst {
-        Instruction::ConstQ1Gate(pos) => {
+        Instruction::ConstQ1Gate(pos) | Instruction::ConstQ1GateNonU(pos) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
-        Instruction::ConstQ2Gate((pos2, pos1)) => {
+        Instruction::ConstQ2Gate((pos2, pos1)) | Instruction::ConstQ2GateNonU((pos2, pos1)) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
@@ -171,11 +191,11 @@ impl Circuit {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
-        Instruction::VarQ1Gate(pos) => {
+        Instruction::VarQ1Gate(pos) | Instruction::VarQ1GateNonU(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
-        Instruction::VarQ2Gate((pos2, pos1)) => {
+        Instruction::VarQ2Gate((pos2, pos1)) | Instruction::VarQ2GateNonU((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
@@ -210,11 +230,11 @@ impl Circuit {
     data_transfer(&self.initial_state, &mut self.state);
     for inst in &self.instructions {
       match inst {
-        Instruction::ConstQ1Gate(pos) => {
+        Instruction::ConstQ1Gate(pos) | Instruction::ConstQ1GateNonU(pos) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
-        Instruction::ConstQ2Gate((pos2, pos1)) => {
+        Instruction::ConstQ2Gate((pos2, pos1)) | Instruction::ConstQ2GateNonU((pos2, pos1)) => {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
@@ -222,11 +242,11 @@ impl Circuit {
           let gate = const_gates.pop_front().expect("The number of constant gates is less than required.");
           self.state.apply_q2_gate_diag(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
-        Instruction::VarQ1Gate(pos) => {
+        Instruction::VarQ1Gate(pos) | Instruction::VarQ1GateNonU(pos) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q1_gate(gate.as_slice().expect("Gate is not contiguous."), *pos);
         },
-        Instruction::VarQ2Gate((pos2, pos1)) => {
+        Instruction::VarQ2Gate((pos2, pos1)) | Instruction::VarQ2GateNonU((pos2, pos1)) => {
           let gate = var_gates.pop_front().expect("The number of variable gates is less than required.");
           self.state.apply_q2_gate(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
         },
@@ -240,7 +260,7 @@ impl Circuit {
         Instruction::DiffQ2Density((pos2, pos1)) => {
           density_matrices.push(np_matrix_from_slice(&self.state.get_q2_density(*pos2, *pos1)[..], py));
         },
-        _ => {},
+        Instruction::Q2Density(_) | Instruction::Q1Density(_) => {},
       }
     }
     if !const_gates.is_empty() { panic!("Number of constant gates is more than required.") };
@@ -270,9 +290,25 @@ impl Circuit {
             bwd_option = Some(bwd);
           }
         },
+        Instruction::ConstQ1GateNonU(pos) => {
+          let gate = const_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q1_gate_inv(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          if let Some(mut bwd) = bwd_option.take() {
+            bwd.apply_q1_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos);
+            bwd_option = Some(bwd);
+          }
+        },
         Instruction::ConstQ2Gate((pos2, pos1)) => {
           let gate = const_gates.pop().expect("The number of gates is less than required.");
           fwd.apply_q2_gate_conj_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          if let Some(mut bwd) = bwd_option.take() {
+            bwd.apply_q2_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+            bwd_option = Some(bwd);
+          }
+        },
+        Instruction::ConstQ2GateNonU((pos2, pos1)) => {
+          let gate = const_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q2_gate_inv(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
           if let Some(mut bwd) = bwd_option.take() {
             bwd.apply_q2_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
             bwd_option = Some(bwd);
@@ -300,9 +336,39 @@ impl Circuit {
             ], py));
           }
         },
+        Instruction::VarQ1GateNonU(pos) => {
+          let gate = var_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q1_gate_inv(gate.as_slice().expect("Gate is not contiguous."), *pos);
+          if let Some(mut bwd) = bwd_option.take() {
+            grads_wrt_gates.push_front(np_array_from_slice(&get_q1_grad(&fwd, &bwd, *pos)[..], py));
+            bwd.apply_q1_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos);
+            bwd_option = Some(bwd);
+          } else {
+            grads_wrt_gates.push_front(np_array_from_slice(&[
+              Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.),
+            ], py));
+          }
+        },
         Instruction::VarQ2Gate((pos2, pos1)) => {
           let gate = var_gates.pop().expect("The number of gates is less than required.");
           fwd.apply_q2_gate_conj_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+          if let Some(mut bwd) = bwd_option.take() {
+            grads_wrt_gates.push_front(np_array_from_slice(&get_q2_grad(&fwd, &bwd, *pos2, *pos1)[..], py));
+            bwd.apply_q2_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
+            bwd_option = Some(bwd);
+          } else {
+            grads_wrt_gates.push_front(np_array_from_slice(&[
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+              Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.), Complex::new(0., 0.),
+            ], py));
+          }
+        },
+        Instruction::VarQ2GateNonU((pos2, pos1)) => {
+          let gate = var_gates.pop().expect("The number of gates is less than required.");
+          fwd.apply_q2_gate_inv(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);
           if let Some(mut bwd) = bwd_option.take() {
             grads_wrt_gates.push_front(np_array_from_slice(&get_q2_grad(&fwd, &bwd, *pos2, *pos1)[..], py));
             bwd.apply_q2_gate_tr(gate.as_slice().expect("Gate is not contiguous."), *pos2, *pos1);

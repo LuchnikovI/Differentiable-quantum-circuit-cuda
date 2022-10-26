@@ -1,27 +1,72 @@
 #include <cuComplex.h>
-#include <cstdint>
+#include <stdio.h>
+#include "cublas_v2.h"
 
-//TODO: adjust kernel parameters
+// TODO: adjust kernel parameters
 #define BLOCKS_NUM 128
-#define THREADS_NUM 128 // must be 2^n
+#define THREADS_NUM 128
 
+
+// double of single precision
 #ifdef F64
-  #define ADD cuCadd
-  #define SUB cuCsub
-  #define MUL cuCmul
-  #define CONJ cuConj
-  #define COMPLEX cuDoubleComplex
-  #define COMPLEXNEW make_cuDoubleComplex
-  #define ABS cuCabs
+# define ADD cuCadd
+# define SUB cuCsub
+# define MUL cuCmul
+# define CONJ cuConj
+# define COMPLEX cuDoubleComplex
+# define COMPLEXNEW make_cuDoubleComplex
+# define ABS cuCabs
+# define MATINV cublasZmatinvBatched
 #else
-  #define ADD cuCaddf
-  #define SUB cuCsubf
-  #define MUL cuCmulf
-  #define CONJ cuConjf
-  #define COMPLEX cuFloatComplex
-  #define COMPLEXNEW make_cuFloatComplex
-  #define ABS cuCabsf
+# define ADD cuCaddf
+# define SUB cuCsubf
+# define MUL cuCmulf
+# define CONJ cuConjf
+# define COMPLEX cuFloatComplex
+# define COMPLEXNEW make_cuFloatComplex
+# define ABS cuCabsf
+# define MATINV cublasCmatinvBatched
 #endif
+
+// CUDA errors handler
+#define CUDA_CHECK( call )                                                             \
+{                                                                                      \
+  auto status = (cudaError_t)call;                                                     \
+  char *err_str = (char*)malloc(1024 * sizeof(char));                                  \
+  if ( status != cudaSuccess )                                                         \
+  {                                                                                    \
+    snprintf(                                                                          \
+      err_str,                                                                         \
+      1024,                                                                            \
+      "CUDA ERROR: call of a function \"%s\" in line %d of file %s failed with %s.\0", \
+      #call,                                                                           \
+      __LINE__,                                                                        \
+      __FILE__,                                                                        \
+      cudaGetErrorName(status)                                                         \
+    );                                                                                 \
+    return err_str;                                                                    \
+  }                                                                                    \
+}
+
+// cublas errors handler
+#define CUBLAS_CHECK( call )                                                                    \
+{                                                                                               \
+  auto status = (cublasStatus_t)call;                                                           \
+  char *err_str = (char*)malloc(1024 * sizeof(char));                                           \
+  if ( status != CUBLAS_STATUS_SUCCESS )                                                        \
+  {                                                                                             \
+    snprintf(                                                                                   \
+      err_str,                                                                                  \
+      1024,                                                                                     \
+      "CUBLAS ERROR: call of a function \"%s\" in line %d of file %s failed with status %d.\0", \
+      #call,                                                                                    \
+      __LINE__,                                                                                 \
+      __FILE__,                                                                                 \
+      status                                                                                    \
+    );                                                                                          \
+    return err_str;                                                                             \
+  }                                                                                             \
+}
 
 // macro definitions of the most used for loops
 #define PARALLEL_FOR(index, stop_index, ...)              \
@@ -52,12 +97,13 @@
     }                                                     \
   }
 
+// const memory for gates
 __constant__ COMPLEX q1g[4];
 __constant__ COMPLEX q2g[16];
 __constant__ COMPLEX q2dg[4];
 
 // utility functions necessary to traverse a state
-__device__ size_t insert_zero(
+static __device__ size_t insert_zero(
   size_t mask,
   size_t offset
 )
@@ -65,7 +111,7 @@ __device__ size_t insert_zero(
   return ((mask & offset) << 1) | ((~mask) & offset);
 }
 
-__device__ size_t insert_two_zeros(
+static __device__ size_t insert_two_zeros(
   size_t mask1,
   size_t mask2,
   size_t offset
@@ -76,43 +122,68 @@ __device__ size_t insert_two_zeros(
   return insert_zero(max_index_mask, insert_zero(min_index_mask, offset));
 }
 
+// matrix inverse
+static char* inv(const COMPLEX* A, COMPLEX* Ainv, size_t size) {
+  cublasHandle_t handle;
+  int* info;
+  int host_info;
+  CUDA_CHECK(cudaMalloc(&info, sizeof(int)));
+  COMPLEX** Abatch;
+  COMPLEX** Ainvbatch;
+  CUDA_CHECK(cudaMalloc(&Abatch, sizeof(void*)));
+  CUDA_CHECK(cudaMalloc(&Ainvbatch, sizeof(void*)));
+  CUDA_CHECK(cudaMemcpy(Abatch, &A, sizeof(void*), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(Ainvbatch, &Ainv, sizeof(void*), cudaMemcpyHostToDevice));
+  CUBLAS_CHECK(cublasCreate_v2(&handle));
+  CUBLAS_CHECK(MATINV(handle, size, Abatch, size, Ainvbatch, size, info, 1));
+  CUDA_CHECK(cudaMemcpy(&host_info, info, sizeof(int), cudaMemcpyDeviceToHost));
+  if ( host_info != 0 ) {
+    return "The input matrix is singular.";
+  }
+  CUBLAS_CHECK(cublasDestroy(handle));
+  CUDA_CHECK(cudaFree(info));
+  CUDA_CHECK(cudaFree(Ainvbatch));
+  CUDA_CHECK(cudaFree(Abatch));
+  return 0;
+}
+
 // allocate an uninitialized state on the device
 extern "C"
-int32_t get_state (
+const char* get_state (
   COMPLEX** state,
   size_t qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  int32_t status = cudaMalloc(state, size * sizeof(COMPLEX));
-  return status;
+  CUDA_CHECK(cudaMalloc(state, size * sizeof(COMPLEX)));
+  return 0;
 }
 
 // copy a state to the host
 extern "C"
-int32_t copy_to_host (
+const char* copy_to_host (
   COMPLEX* state,
   COMPLEX* host_state,
   size_t qubits_number
 )
 {
   size_t size = 1 << qubits_number;
-  int32_t status = cudaMemcpy(host_state, state, size * sizeof(COMPLEX), cudaMemcpyDeviceToHost);
-  return status;
+  CUDA_CHECK(cudaMemcpy(host_state, state, size * sizeof(COMPLEX), cudaMemcpyDeviceToHost));
+  return 0;
 }
 
 // drop state on the device
 extern "C"
-int32_t drop_state(
+const char* drop_state(
   COMPLEX* state
 )
 {
-  int32_t status = cudaFree(state);
-  return status;
+  CUDA_CHECK(cudaFree(state));
+  return 0;
 }
 
 // initialize state to the standard one
-__global__ void _set2standard (
+static __global__ void _set2standard (
   COMPLEX* state,
   size_t  qubits_number
 )
@@ -138,7 +209,7 @@ void set2standard (
 }
 
 // computes q1 gate gradient from bwd and fwd "states"
-__global__ void _q1grad (
+static __global__ void _q1grad (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -192,7 +263,7 @@ __global__ void _q1grad (
 }
 
 extern "C"
-int q1grad (
+const char* q1grad (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -202,7 +273,7 @@ int q1grad (
 {
   COMPLEX* device_grad;
   COMPLEX* host_grad;
-  int32_t alloc_status = cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX)));
   _q1grad<<<BLOCKS_NUM, THREADS_NUM>>>(
     fwd,
     bwd,
@@ -211,12 +282,12 @@ int q1grad (
     qubits_number
   );
   host_grad = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
-  int32_t memcopy_status = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
     host_grad,
     device_grad,
     4 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
-  );
+  ));
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     ONE_POSITION_FOR(
       grad[2 * p + q] = ADD(
@@ -225,17 +296,13 @@ int q1grad (
       );
     )
   }
-  delete[] host_grad;
-  int32_t free_status = cudaFree(device_grad);
-  // return the first error code
-  if ( alloc_status != 0 ) return alloc_status;
-  if ( memcopy_status != 0 ) return memcopy_status;
-  if ( free_status != 0 ) return free_status;
+  free(host_grad);
+  CUDA_CHECK(cudaFree(device_grad));
   return 0;
 }
 
 // computes q2 gate gradient from fwd and bwd "states"
-__global__ void _q2grad (
+static __global__ void _q2grad (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -294,7 +361,7 @@ __global__ void _q2grad (
 }
 
 extern "C"
-int q2grad (
+const char* q2grad (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -305,7 +372,7 @@ int q2grad (
 {
   COMPLEX* device_grad;
   COMPLEX* host_grad;
-  int32_t alloc_status = cudaMalloc(&device_grad, 16 * BLOCKS_NUM * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMalloc(&device_grad, 16 * BLOCKS_NUM * sizeof(COMPLEX)));
   _q2grad<<<BLOCKS_NUM, THREADS_NUM>>>(
     fwd,
     bwd,
@@ -315,12 +382,12 @@ int q2grad (
     qubits_number
   );
   host_grad = (COMPLEX*)malloc(16 * BLOCKS_NUM * sizeof(COMPLEX));
-  int32_t memcopy_status = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
     host_grad,
     device_grad,
     16 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
-  );
+  ));
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     TWO_POSITIONS_FOR(
       grad[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
@@ -329,17 +396,13 @@ int q2grad (
       );
     )
   }
-  delete[] host_grad;
-  int32_t free_status = cudaFree(device_grad);
-  // return the first error code
-  if ( alloc_status != 0 ) return alloc_status;
-  if ( memcopy_status != 0 ) return memcopy_status;
-  if ( free_status != 0 ) return free_status;
+  free(host_grad);
+  CUDA_CHECK(cudaFree(device_grad));
   return 0;
 }
 
 // computes q2 diagonal gate gradient from fwd and bwd "states"
-__global__ void _q2grad_diag (
+static __global__ void _q2grad_diag (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -393,7 +456,7 @@ __global__ void _q2grad_diag (
 }
 
 extern "C"
-int q2grad_diag (
+const char* q2grad_diag (
   const COMPLEX* fwd,
   const COMPLEX* bwd,
   COMPLEX* grad,
@@ -404,7 +467,7 @@ int q2grad_diag (
 {
   COMPLEX* device_grad;
   COMPLEX* host_grad;
-  int32_t alloc_status = cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMalloc(&device_grad, 4 * BLOCKS_NUM * sizeof(COMPLEX)));
   _q2grad_diag<<<BLOCKS_NUM, THREADS_NUM>>>(
     fwd,
     bwd,
@@ -414,12 +477,12 @@ int q2grad_diag (
     qubits_number
   );
   host_grad = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
-  int32_t memcopy_status = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
     host_grad,
     device_grad,
     4 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
-  );
+  ));
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     ONE_POSITION_FOR(
       grad[2 * p + q] = ADD(
@@ -428,29 +491,30 @@ int q2grad_diag (
       );
     )
   }
-  delete[] host_grad;
-  int32_t free_status = cudaFree(device_grad);
-  // return the first error code
-  if ( alloc_status != 0 ) return alloc_status;
-  if ( memcopy_status != 0 ) return memcopy_status;
-  if ( free_status != 0 ) return free_status;
+  free(host_grad);
+  CUDA_CHECK(cudaFree(device_grad));
   return 0;
 }
 
 // sets state from host
 extern "C"
-int32_t set_from_host (
+const char* set_from_host (
   COMPLEX* device_state,
   const COMPLEX* host_state,
   size_t qubits_number
 )
 {
-  int32_t memcpy_state = cudaMemcpy(device_state, host_state, (1 << qubits_number) * sizeof(COMPLEX), cudaMemcpyHostToDevice);
-  return memcpy_state;
+  CUDA_CHECK(cudaMemcpy(
+    device_state,
+    host_state,
+    (1 << qubits_number) * sizeof(COMPLEX),
+    cudaMemcpyHostToDevice
+  ));
+  return 0;
 }
 
 // one qubits gate application
-__global__ void _q1gate(
+static __global__ void _q1gate(
   COMPLEX* state,
   size_t pos,
   size_t qubits_number
@@ -472,20 +536,45 @@ __global__ void _q1gate(
 }
 
 extern "C"
-int32_t q1gate(
+const char* q1gate(
   COMPLEX* state,
   const COMPLEX* gate,
-  size_t idx,
+  size_t pos,
   size_t qubits_number
 )
 {
-  int32_t copy_status = cudaMemcpyToSymbol(q1g, gate, 4 * sizeof(COMPLEX));
-  _q1gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, idx, qubits_number);
-  return copy_status;
+  CUDA_CHECK(cudaMemcpyToSymbol(q1g, gate, 4 * sizeof(COMPLEX)));
+  _q1gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos, qubits_number);
+  return 0;
+}
+
+extern "C"
+const char* q1gate_inv(
+  COMPLEX* state,
+  const COMPLEX* gate,
+  size_t pos,
+  size_t qubits_number
+)
+{
+  // TODO: reduce number of CUDA mallocs
+  COMPLEX* d_inv_gate;
+  COMPLEX* d_gate;
+  cudaMalloc(&d_gate, 4 * sizeof(COMPLEX));
+  cudaMalloc(&d_inv_gate, 4 * sizeof(COMPLEX));
+  cudaMemcpy(d_gate, gate, 4 * sizeof(COMPLEX), cudaMemcpyHostToDevice);
+  char* status = inv(d_gate, d_inv_gate, 2);
+  if (status != 0) {
+    return status; 
+  }
+  CUDA_CHECK(cudaMemcpyToSymbol(q1g, d_inv_gate, 4 * sizeof(COMPLEX)));
+  CUDA_CHECK(cudaFree(d_inv_gate));
+  CUDA_CHECK(cudaFree(d_gate));
+  _q1gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos, qubits_number);
+  return 0;
 }
 
 // two qubits gate application
-__global__ void _q2gate(
+static __global__ void _q2gate(
   COMPLEX* state,
   size_t pos2,
   size_t pos1,
@@ -518,7 +607,7 @@ __global__ void _q2gate(
 }
 
 extern "C"
-int32_t q2gate(
+const char* q2gate(
   COMPLEX* state,
   const COMPLEX* gate,
   size_t pos2,
@@ -526,13 +615,39 @@ int32_t q2gate(
   size_t qubits_number
 )
 {
-  int32_t copy_status = cudaMemcpyToSymbol(q2g, gate, 16 * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMemcpyToSymbol(q2g, gate, 16 * sizeof(COMPLEX)));
   _q2gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
-  return copy_status;
+  return 0;
+}
+
+extern "C"
+const char* q2gate_inv(
+  COMPLEX* state,
+  const COMPLEX* gate,
+  size_t pos2,
+  size_t pos1,
+  size_t qubits_number
+)
+{
+  // TODO: reduce number of CUDA mallocs
+  COMPLEX* d_inv_gate;
+  COMPLEX* d_gate;
+  cudaMalloc(&d_gate, 16 * sizeof(COMPLEX));
+  cudaMalloc(&d_inv_gate, 16 * sizeof(COMPLEX));
+  cudaMemcpy(d_gate, gate, 16 * sizeof(COMPLEX), cudaMemcpyHostToDevice);
+  char* status = inv(d_gate, d_inv_gate, 4);
+  if (status != 0) {
+    return status; 
+  }
+  CUDA_CHECK(cudaMemcpyToSymbol(q2g, d_inv_gate, 16 * sizeof(COMPLEX)));
+  CUDA_CHECK(cudaFree(d_inv_gate));
+  CUDA_CHECK(cudaFree(d_gate));
+  _q2gate<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
+  return 0;
 }
 
 // two qubits diagonal gate application
-__global__ void _q2gate_diag(
+static __global__ void _q2gate_diag(
   COMPLEX* state,
   size_t pos2,
   size_t pos1,
@@ -555,7 +670,7 @@ __global__ void _q2gate_diag(
 }
 
 extern "C"
-int32_t q2gate_diag(
+const char* q2gate_diag(
   COMPLEX* state,
   const COMPLEX* gate,
   size_t pos2,
@@ -563,13 +678,13 @@ int32_t q2gate_diag(
   size_t qubits_number
 )
 {
-  int32_t copy_status = cudaMemcpyToSymbol(q2dg, gate, 4 * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMemcpyToSymbol(q2dg, gate, 4 * sizeof(COMPLEX)));
   _q2gate_diag<<<BLOCKS_NUM, THREADS_NUM>>>(state, pos2, pos1, qubits_number);
-  return copy_status;
+  return 0;
 }
 
 // one qubit density matrix computation
-__global__ void _get_q1density(
+static __global__ void _get_q1density(
   const COMPLEX* state,
   COMPLEX* density,
   size_t pos,
@@ -581,7 +696,7 @@ __global__ void _get_q1density(
   size_t stride = 1 << pos;
   size_t size = 1 << qubits_number;
   size_t batch_size = size >> 1;
-  COMPLEX tmp[4] = { 
+  COMPLEX tmp[4] = {
     {0, 0}, {0, 0},
     {0, 0}, {0, 0},
   };
@@ -622,7 +737,7 @@ __global__ void _get_q1density(
 }
 
 extern "C"
-int32_t get_q1density(
+const char* get_q1density(
   const COMPLEX* state,
   COMPLEX* density,
   size_t pos,
@@ -631,7 +746,7 @@ int32_t get_q1density(
 {
   COMPLEX* device_density;
   COMPLEX* host_density;
-  int32_t alloc_status = cudaMalloc(&device_density, 4 * BLOCKS_NUM * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMalloc(&device_density, 4 * BLOCKS_NUM * sizeof(COMPLEX)));
   _get_q1density<<<BLOCKS_NUM, THREADS_NUM>>>(
     state,
     device_density,
@@ -639,12 +754,12 @@ int32_t get_q1density(
     qubits_number
   );
   host_density = (COMPLEX*)malloc(4 * BLOCKS_NUM * sizeof(COMPLEX));
-  int32_t memcopy_status = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
     host_density,
     device_density,
     4 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
-  );
+  ));
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     ONE_POSITION_FOR(
       density[2 * p + q] = ADD(
@@ -653,17 +768,13 @@ int32_t get_q1density(
       );
     )
   }
-  delete[] host_density;
-  int32_t free_status = cudaFree(device_density);
-  // return the first error code
-  if ( alloc_status != 0 ) return alloc_status;
-  if ( memcopy_status != 0 ) return memcopy_status;
-  if ( free_status != 0 ) return free_status;
+  free(host_density);
+  CUDA_CHECK(cudaFree(device_density));
   return 0;
 }
 
 // two qubit density matrix computation
-__global__ void _get_q2density(
+static __global__ void _get_q2density(
   const COMPLEX* state,
   COMPLEX* density,
   size_t pos2,
@@ -721,7 +832,7 @@ __global__ void _get_q2density(
 }
 
 extern "C"
-int32_t get_q2density(
+const char* get_q2density(
   const COMPLEX* state,
   COMPLEX* density,
   size_t pos2,
@@ -731,7 +842,7 @@ int32_t get_q2density(
 {
   COMPLEX* device_density;
   COMPLEX* host_density;
-  int32_t alloc_status = cudaMalloc(&device_density, 16 * BLOCKS_NUM * sizeof(COMPLEX));
+  CUDA_CHECK(cudaMalloc(&device_density, 16 * BLOCKS_NUM * sizeof(COMPLEX)));
   _get_q2density<<<BLOCKS_NUM, THREADS_NUM>>>(
     state,
     device_density,
@@ -740,12 +851,12 @@ int32_t get_q2density(
     qubits_number
   );
   host_density = (COMPLEX*)malloc(16 * BLOCKS_NUM * sizeof(COMPLEX));
-  int32_t memcopy_status = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
     host_density,
     device_density,
     16 * BLOCKS_NUM * sizeof(COMPLEX),
     cudaMemcpyDeviceToHost
-  );
+  ));
   for (int i = 0; i < BLOCKS_NUM; i ++) {
     TWO_POSITIONS_FOR(
       density[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
@@ -754,17 +865,13 @@ int32_t get_q2density(
       );
     )
   }
-  delete[] host_density;
-  int32_t free_status = cudaFree(device_density);
-  // return the first error code
-  if ( alloc_status != 0 ) return alloc_status;
-  if ( memcopy_status != 0 ) return memcopy_status;
-  if ( free_status != 0 ) return free_status;
+  free(host_density);
+  CUDA_CHECK(cudaFree(device_density));
   return 0;
 }
 
 // copy of a state
-__global__ void _copy(
+static __global__ void _copy(
   const COMPLEX* src,
   COMPLEX* dst,
   size_t qubits_number
@@ -789,7 +896,7 @@ void copy(
 }
 
 // primitives to pass gradient through the density matrix computation 
-__global__ void _conj_and_double(
+static __global__ void _conj_and_double(
   const COMPLEX* src,
   COMPLEX* dst,
   size_t qubits_number
@@ -816,7 +923,7 @@ void conj_and_double(
   );
 }
 
-__global__ void _add(
+static __global__ void _add(
   const COMPLEX* src,
   COMPLEX* dst,
   size_t qubits_number
@@ -845,7 +952,8 @@ void add(
 #ifdef CHECK
   #include <cassert>
   #include <stdio.h>
-  int main() {
+  // This checks correctness of the ghz state preparation
+  void ghz_test() {
     int qubits_number = 21;
     COMPLEX* state;
     COMPLEX* host_state;
@@ -916,7 +1024,51 @@ void add(
     }
     printf("OK!\n");
     drop_state(state);
-    delete[] host_state;
+    free(host_state);
+  }
+  // this tests matrix inversion
+  void inv_test() {
+    COMPLEX h_A[9] = {
+      {1., 1.1},  {2., 2.},  {3., 3.},
+      {1.2, 2.3}, {3.2, 0.}, {1., 1.5},
+      {0., 2.1},  {2., 4.},  {2.11, 3.44},
+    };
+    COMPLEX h_Ainv[9];
+    COMPLEX* d_A;
+    COMPLEX* d_Ainv;
+    COMPLEX M[9] ={
+      {0., 0.}, {0., 0.}, {0., 0.},
+      {0., 0.}, {0., 0.}, {0., 0.},
+      {0., 0.}, {0., 0.}, {0., 0.}
+    };
+    cudaMalloc(&d_A, 9 * sizeof(COMPLEX));
+    cudaMalloc(&d_Ainv, 9 * sizeof(COMPLEX));
+    cudaMemcpy(d_A, h_A, 9 * sizeof(COMPLEX), cudaMemcpyHostToDevice);
+    inv(d_A, d_Ainv, 3);
+    cudaMemcpy(h_Ainv, d_Ainv, 9 * sizeof(COMPLEX), cudaMemcpyDeviceToHost);
+    for (int q = 0; q < 3; q++) {
+      for (int p = 0; p < 3; p++) {
+        for (int m = 0; m < 3; m++) {
+          M[3 * q + p] = ADD(M[3 * q + p], MUL(h_A[3 * q + m], h_Ainv[3 * m + p]));
+        }
+      }
+    }
+    assert(ABS(SUB(M[0], COMPLEXNEW(1, 0))) < 1e-5);
+    assert(ABS(SUB(M[1], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[2], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[3], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[4], COMPLEXNEW(1, 0))) < 1e-5);
+    assert(ABS(SUB(M[5], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[6], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[7], COMPLEXNEW(0, 0))) < 1e-5);
+    assert(ABS(SUB(M[8], COMPLEXNEW(1, 0))) < 1e-5);
+    cudaFree(d_A);
+    cudaFree(d_Ainv);
+    cudaFree(M);
+  }
+  int main() {
+    ghz_test();
+    inv_test();
     return 0;
   }
 #endif

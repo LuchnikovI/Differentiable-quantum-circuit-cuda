@@ -1,4 +1,6 @@
 use num_complex;
+use std::os::raw::c_char;
+use std::ffi::CStr;
 
 #[cfg(not(feature = "f64"))]
 use std::os::raw::c_float;
@@ -23,12 +25,21 @@ use super::primitives_bind::{
   conj_and_double,
   add,
   copy,
+  q1gate_inv,
+  q2gate_inv,
 };
 
 #[cfg(not(feature = "f64"))]
 type Complex = num_complex::Complex<c_float>;
 #[cfg(feature = "f64")]
 type Complex = num_complex::Complex<c_double>;
+
+fn cuda_panic(c_char: *const c_char) {
+  if !c_char.is_null() {
+    let err_msg = unsafe { CStr::from_ptr(c_char) };
+    panic!("{:?}", err_msg);
+  }
+}
 
 fn get_qubits_number(mut size: usize) -> usize {
   assert_eq!(size & (size - 1), 0, "State size is not a power of 2.");
@@ -49,42 +60,29 @@ impl QuantizedTensor {
 
   pub fn new_standard(qubits_number: usize) -> Self {
     let mut state_ptr = std::ptr::null_mut();
-    let cuda_status = unsafe { get_state(&mut state_ptr, qubits_number) };
-    if cuda_status == 0
-    {
-      unsafe { set2standard(state_ptr, qubits_number) };
-      Self { state_ptr, qubits_number }
-    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
+    cuda_panic(unsafe { get_state(&mut state_ptr, qubits_number) });
+    unsafe { set2standard(state_ptr, qubits_number) };
+    Self { state_ptr, qubits_number }
   }
 
   pub fn new_from_host(state: &[Complex]) -> Self {
     let qubits_number = get_qubits_number(state.len());
     let mut state_ptr = std::ptr::null_mut();
-    let mut cuda_status = unsafe { get_state(&mut state_ptr, qubits_number) };
-    if cuda_status == 0
-    {
-      unsafe {
-        cuda_status = set_from_host(state_ptr, state.as_ptr(), qubits_number);
-        if cuda_status != 0 { panic!("Cuda error with code {} occurred during copying from CPU to GPU.", cuda_status) }
-      };
-      Self { state_ptr, qubits_number }
-    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status) }
+    cuda_panic(unsafe { get_state(&mut state_ptr, qubits_number) });
+    cuda_panic(unsafe { set_from_host(state_ptr, state.as_ptr(), qubits_number) });
+    Self { state_ptr, qubits_number }
   }
 
   pub fn set_from_host(&mut self, state: &[Complex]) {
     let qubits_number = get_qubits_number(state.len());
     assert_eq!(qubits_number, self.qubits_number, "Size of the given state does not match the size of the tensor.");
-    let cuda_status = unsafe { set_from_host(self.state_ptr, state.as_ptr(), qubits_number) };
-    if cuda_status != 0 { panic!("Cuda error with code {} occurred during copying from CPU to GPU.", cuda_status) }
+    cuda_panic(unsafe { set_from_host(self.state_ptr, state.as_ptr(), qubits_number) });
   }
   pub fn conj_and_double(&self) -> Self {
     let mut conj_state_ptr = std::ptr::null_mut();
-    let cuda_status = unsafe { get_state(&mut conj_state_ptr, self.qubits_number) };
-    if cuda_status == 0
-    {
-      unsafe { conj_and_double(self.state_ptr, conj_state_ptr, self.qubits_number) };
-      Self { state_ptr: conj_state_ptr, qubits_number: self.qubits_number }
-    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
+    cuda_panic(unsafe { get_state(&mut conj_state_ptr, self.qubits_number) });
+    unsafe { conj_and_double(self.state_ptr, conj_state_ptr, self.qubits_number) };
+    Self { state_ptr: conj_state_ptr, qubits_number: self.qubits_number }
   }
   pub fn add(&mut self, other: Self) {
     assert_eq!(self.qubits_number, other.qubits_number, "Tensors have diferent sizes.");
@@ -93,18 +91,21 @@ impl QuantizedTensor {
   pub fn get_cpu_state_copy(&self) -> Vec<Complex> {
     let size = 1 << self.qubits_number;
     let mut state_vec = Vec::with_capacity(size);
-    let copy_status = unsafe {
+    cuda_panic(unsafe {
       state_vec.set_len(size);
       copy_to_host(self.state_ptr, state_vec.as_mut_ptr(), self.qubits_number)
-    };
-    assert_eq!(copy_status, 0, "Cuda error with code {} occurred during memcopy from the GPU to the CPU.", copy_status);
+    });
     state_vec
   }
   pub fn apply_q1_gate(&mut self, gate: &[Complex], pos: usize) {
     assert_eq!(gate.len(), 4, "Incorrect len of the gate's buffer.");
     assert!(pos < self.qubits_number, "pos is out of the bound.");
-    let cuda_status = unsafe { q1gate(self.state_ptr, gate.as_ptr(), pos, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 gate application.", cuda_status);
+    cuda_panic(unsafe { q1gate(self.state_ptr, gate.as_ptr(), pos, self.qubits_number) });
+  }
+  pub fn apply_q1_gate_inv(&mut self, gate: &[Complex], pos: usize) {
+    assert_eq!(gate.len(), 4, "Incorrect len of the gate's buffer.");
+    assert!(pos < self.qubits_number, "pos is out of the bound.");
+    cuda_panic(unsafe { q1gate_inv(self.state_ptr, gate.as_ptr(), pos, self.qubits_number) });
   }
   pub fn apply_q1_gate_tr(&mut self, gate: &[Complex], pos: usize) {
     let mut tr_gate = gate.to_owned();
@@ -121,8 +122,14 @@ impl QuantizedTensor {
     assert!(pos1 != pos2, "pos1 and pos2 must be different.");
     assert!(pos1 < self.qubits_number, "pos1 is out of the bound.");
     assert!(pos2 < self.qubits_number, "pos2 is out of the bound.");
-    let cuda_status = unsafe { q2gate(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q2 gate application.", cuda_status);
+    cuda_panic(unsafe { q2gate(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) });
+  }
+  pub fn apply_q2_gate_inv(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
+    assert_eq!(gate.len(), 16, "Incorrect len of the gate's buffer.");
+    assert!(pos1 != pos2, "pos1 and pos2 must be different.");
+    assert!(pos1 < self.qubits_number, "pos1 is out of the bound.");
+    assert!(pos2 < self.qubits_number, "pos2 is out of the bound.");
+    cuda_panic(unsafe { q2gate_inv(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) });
   }
   pub fn apply_q2_gate_tr(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
     let mut tr_gate = gate.to_owned();
@@ -141,8 +148,7 @@ impl QuantizedTensor {
     assert!(pos1 != pos2, "pos1 and pos2 must be different.");
     assert!(pos1 < self.qubits_number, "pos1 is out of the bound.");
     assert!(pos2 < self.qubits_number, "pos2 is out of the bound.");
-    let cuda_status = unsafe { q2gate_diag(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q2 diagonal gate application.", cuda_status);
+    cuda_panic(unsafe { q2gate_diag(self.state_ptr, gate.as_ptr(), pos2, pos1, self.qubits_number) });
   }
   pub fn apply_q2_gate_diag_conj(&mut self, gate: &[Complex], pos2: usize, pos1: usize) {
     let conj_gate: Vec<Complex> = gate.into_iter().map(|x| { x.conj() }).collect();
@@ -150,14 +156,12 @@ impl QuantizedTensor {
   }
   pub fn get_q1_density(&self, pos: usize) -> Vec<Complex> {
     let mut density = vec![Complex::new(0., 0.); 4];
-    let cuda_status = unsafe { get_q1density(self.state_ptr, density.as_mut_ptr(), pos, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 density matrix computation.", cuda_status);
+    cuda_panic(unsafe { get_q1density(self.state_ptr, density.as_mut_ptr(), pos, self.qubits_number) });
     density
   }
   pub fn get_q2_density(&self, pos2: usize, pos1: usize) -> Vec<Complex> {
     let mut density = vec![Complex::new(0., 0.); 16];
-    let cuda_status = unsafe { get_q2density(self.state_ptr, density.as_mut_ptr(), pos2, pos1, self.qubits_number) };
-    assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during a q1 density matrix computation.", cuda_status);
+    cuda_panic(unsafe { get_q2density(self.state_ptr, density.as_mut_ptr(), pos2, pos1, self.qubits_number) });
     density
   }
 }
@@ -218,20 +222,16 @@ pub fn get_q2_grad_diag(
 
 impl Drop for QuantizedTensor {
   fn drop(&mut self) {
-      let cuda_status = unsafe { drop_state(self.state_ptr) };
-      assert_eq!(cuda_status, 0, "Cuda error with code {} occurred during deallocation of a GPU memory.", cuda_status);
+      cuda_panic(unsafe { drop_state(self.state_ptr) });
   }
 }
 
 impl Clone for QuantizedTensor {
   fn clone(&self) -> Self {
     let mut copy_state_ptr = std::ptr::null_mut();
-    let cuda_status = unsafe { get_state(&mut copy_state_ptr, self.qubits_number) };
-    if cuda_status == 0
-    {
-      unsafe { copy(self.state_ptr, copy_state_ptr, self.qubits_number) };
-      Self { state_ptr: copy_state_ptr, qubits_number: self.qubits_number }
-    } else { panic!("Cuda error with code {} occurred during state allocation.", cuda_status)}
+    cuda_panic(unsafe { get_state(&mut copy_state_ptr, self.qubits_number) });
+    unsafe { copy(self.state_ptr, copy_state_ptr, self.qubits_number) };
+    Self { state_ptr: copy_state_ptr, qubits_number: self.qubits_number }
   }
 }
 
@@ -412,6 +412,21 @@ mod tests {
   }
 
   #[test]
+  fn test_q1gate_inv() {
+    let qubits_number = 17;
+    let mut state = get_random_state_unnormalized(qubits_number);
+    let mut vm = QuantizedTensor::new_from_host(&state[..]);
+    for pos in 0..qubits_number {
+      let q1random = get_random_q1nonunitary();
+      vm.apply_q1_gate(&q1random[..], pos);
+      vm.apply_q1_gate_inv(&q1random[..], pos);
+      let vm_state = vm.get_cpu_state_copy();
+      cmp_complex_slices(&state[..], &vm_state[..], 1e-2);
+      state = vm_state;
+    }
+  }
+
+  #[test]
   fn test_q2gate() {
     let qubits_number = 17;
     let iters_num = 20;
@@ -426,6 +441,26 @@ mod tests {
         vm.apply_q2_gate(&q2random[..], pos2, pos1);
         let vm_state = vm.get_cpu_state_copy();
         cmp_complex_slices(&state[..], &vm_state[..], 1e-5);
+      }
+    }
+  }
+
+  #[test]
+  fn test_q2gate_inv() {
+    let qubits_number = 17;
+    let iters_num = 20;
+    let mut state = get_random_state_unnormalized(qubits_number);
+    let mut vm = QuantizedTensor::new_from_host(&state[..]);
+    for _ in 0..iters_num {
+      let pos1: usize = random::<i32>() as usize % qubits_number;
+      let pos2: usize = random::<i32>() as usize % qubits_number;
+      if pos1 != pos2 {
+        let q2random = get_random_q2nonunitary();
+        vm.apply_q2_gate(&q2random[..], pos2, pos1);
+        vm.apply_q2_gate_inv(&q2random[..], pos2, pos1);
+        let vm_state = vm.get_cpu_state_copy();
+        cmp_complex_slices(&state[..], &vm_state[..], 1e-2);
+        state = vm_state;
       }
     }
   }

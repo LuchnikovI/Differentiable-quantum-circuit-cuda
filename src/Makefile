@@ -7,8 +7,8 @@ profile: compile run_profiler clean
 get_gpu_properties: compile_with_properties simple_run simple_clean
 
 compile: primitives.cu
-	nvcc -O3 -lineinfo -DCHECK -o out32 primitives.cu
-	nvcc -O3 -lineinfo -DCHECK -DF64 -o out64 primitives.cu
+	nvcc -O3 -lineinfo -lcublas -DCHECK -o out32 primitives.cu
+	nvcc -O3 -lineinfo -lcublas -DCHECK -DF64 -o out64 primitives.cu
 
 run:
 	compute-sanitizer --tool memcheck out32.exe

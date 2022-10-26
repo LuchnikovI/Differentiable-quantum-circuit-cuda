@@ -1,3 +1,5 @@
+import os
+os.add_dll_directory(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\bin")
 from jax.config import config
 config.update('jax_platform_name', 'cpu')
 import jax.numpy as jnp

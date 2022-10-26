@@ -1,4 +1,5 @@
 use num_complex;
+use std::os::raw::c_char;
 
 #[cfg(not(feature = "f64"))]
 use std::os::raw::c_float;
@@ -19,58 +20,71 @@ extern "C" {
   pub(super) fn get_state(
     state: *mut *mut Complex,
     qubits_number: usize
-  ) -> i32;
-  pub(super) fn drop_state(state: *mut Complex) -> i32;
+  ) -> *const c_char;
+  pub(super) fn drop_state(state: *mut Complex) -> *const c_char;
   pub(super) fn copy_to_host(
     state: *const Complex,
     host_state: *mut Complex,
     qubits_number: usize
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn q1gate(
     state: *mut Complex,
     gate: *const Complex,
     pos: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
+  pub(super) fn q1gate_inv(
+    state: *mut Complex,
+    gate: *const Complex,
+    pos: usize,
+    qubits_number: usize,
+  ) -> *const c_char;
   pub(super) fn q2gate(
     state: *mut Complex,
     gate: *const Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
+  pub(super) fn q2gate_inv(
+    state: *mut Complex,
+    gate: *const Complex,
+    pos2: usize,
+    pos1: usize,
+    qubits_number: usize,
+  ) -> *const c_char;
   pub(super) fn q2gate_diag(
     state: *mut Complex,
     gate: *const Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn set_from_host (
     device_state: *mut Complex,
     host_state: *const Complex,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn get_q1density(
     state: *const Complex,
     density: *mut Complex,
     pos: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn get_q2density(
     state: *const Complex,
     density: *mut Complex,
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn q1grad (
     fwd: *const Complex,
     bwd: *const Complex,
     grad: *mut Complex,
     pos: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn q2grad (
     fwd: *const Complex,
     bwd: *const Complex,
@@ -78,7 +92,7 @@ extern "C" {
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn q2grad_diag (
     fwd: *const Complex,
     bwd: *const Complex,
@@ -86,7 +100,7 @@ extern "C" {
     pos2: usize,
     pos1: usize,
     qubits_number: usize,
-  ) -> i32;
+  ) -> *const c_char;
   pub(super) fn conj_and_double(
     src: *const Complex,
     dst: *mut Complex,

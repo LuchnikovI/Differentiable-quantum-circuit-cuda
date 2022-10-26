@@ -1,3 +1,5 @@
+import os
+os.add_dll_directory(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\bin")
 from jax.config import config
 config.update('jax_platform_name', 'cpu')
 config.update("jax_enable_x64", True)
@@ -63,6 +65,14 @@ def test_autodiff():
       c.add_q2_const_gate(i+1, i)
     for i in range(1, qubits_number-1, 2):
       c.add_q2_const_gate_diag(i+1, i)
+    for i in range(qubits_number):
+      c.add_q1_var_gate_nonu(i)
+    for i in range(0, qubits_number-1, 2):
+      c.add_q2_var_gate_nonu(i+1, i)
+    for i in range(qubits_number):
+      c.add_q1_const_gate_nonu(i)
+    for i in range(1, qubits_number-1, 2):
+      c.add_q2_const_gate_nonu(i+1, i)
     for i in range(i):
       c.get_q1_dens_op(i)
   for i in range(qubits_number):
@@ -90,6 +100,10 @@ def test_autodiff():
     const_gates += int((qubits_number - 1) / 2) * [cnot]
     key, subkey = random.split(key)
     const_gates += [random_diag_unitary(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
+    key, subkey = random.split(key)
+    const_gates += [0.01 * random_complex(k, 2) + random_unitary(k, 2) for k in random.split(subkey, qubits_number)]
+    key, subkey = random.split(key)
+    const_gates += [0.01 * random_complex(k, 4) + random_unitary(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
 
   var_gates = []
   for _ in range(layers):
@@ -98,6 +112,10 @@ def test_autodiff():
     var_gates += int((qubits_number - 1) / 2) * [cnot]
     key, subkey = random.split(key)
     var_gates += [random_diag_unitary(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
+    key, subkey = random.split(key)
+    var_gates += [0.01 * random_complex(k, 2) + random_unitary(k, 2) for k in random.split(subkey, qubits_number)]
+    key, subkey = random.split(key)
+    var_gates += [0.01 * random_complex(k, 4) + random_unitary(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
 
   # here we define perturbated gates
   gates_perturbation = []
@@ -108,6 +126,10 @@ def test_autodiff():
     gates_perturbation += [random_complex(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
     key, subkey = random.split(key)
     gates_perturbation += [random_diag_complex(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
+    key, subkey = random.split(key)
+    gates_perturbation += [random_complex(k, 2) for k in random.split(subkey, qubits_number)]
+    key, subkey = random.split(key)
+    gates_perturbation += [random_complex(k, 4) for k in random.split(subkey, int((qubits_number - 1) / 2))]
   var_gates_minus4eta = [lhs - 4 * eta * rhs for (lhs, rhs) in zip(var_gates, gates_perturbation)]
   var_gates_minus3eta = [lhs - 3 * eta * rhs for (lhs, rhs) in zip(var_gates, gates_perturbation)]
   var_gates_minus2eta = [lhs - 2 * eta * rhs for (lhs, rhs) in zip(var_gates, gates_perturbation)]
