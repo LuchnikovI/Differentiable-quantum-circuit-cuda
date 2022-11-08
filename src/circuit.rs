@@ -36,23 +36,18 @@ type Complex = num_complex::Complex<c_float>;
 #[cfg(feature = "f64")]
 type Complex = num_complex::Complex<c_double>;
 
+#[inline]
 fn np_array_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray1<Complex> {
-  let size = slice.len();
-  let nparr = unsafe { PyArray1::new(py, size, false) };
-  zip(unsafe { nparr.as_slice_mut().unwrap().into_iter() }, slice).for_each(|(dst, src)| {
-    *dst = *src;
-  });
-  nparr
+  PyArray1::from_slice(py, slice)
 }
 
+#[inline]
 fn np_matrix_from_slice<'py>(slice: &[Complex], py: Python<'py>) -> &'py PyArray2<Complex> {
   let size = (slice.len() as f64).sqrt() as usize;
   assert_eq!(size * size, slice.len(), "Matrix is not square.");
-  let nparr = unsafe { PyArray2::new(py, (size, size), false) };
-  zip(unsafe { nparr.as_slice_mut().unwrap().into_iter() }, slice).for_each(|(dst, src)| {
-    *dst = *src;
-  });
-  nparr
+  let arr = PyArray1::from_slice(py, slice);
+  let arr = arr.reshape([size, size]).unwrap();
+  arr
 }
 
 enum Instruction {
@@ -436,6 +431,6 @@ impl Circuit {
 
 #[pymodule]
 fn quantum_differentiable_circuit(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_class::<Circuit>()?;
-    Ok(())
+  m.add_class::<Circuit>()?;
+  Ok(())
 }

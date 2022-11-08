@@ -32,9 +32,9 @@
 #define CUDA_CHECK( call )                                                             \
 {                                                                                      \
   auto status = (cudaError_t)call;                                                     \
-  char *err_str = (char*)malloc(1024 * sizeof(char));                                  \
   if ( status != cudaSuccess )                                                         \
   {                                                                                    \
+    char *err_str = (char*)malloc(1024 * sizeof(char));                                \
     snprintf(                                                                          \
       err_str,                                                                         \
       1024,                                                                            \
@@ -52,9 +52,9 @@
 #define CUBLAS_CHECK( call )                                                                    \
 {                                                                                               \
   auto status = (cublasStatus_t)call;                                                           \
-  char *err_str = (char*)malloc(1024 * sizeof(char));                                           \
   if ( status != CUBLAS_STATUS_SUCCESS )                                                        \
   {                                                                                             \
+    char *err_str = (char*)malloc(1024 * sizeof(char));                                         \
     snprintf(                                                                                   \
       err_str,                                                                                  \
       1024,                                                                                     \
@@ -97,30 +97,18 @@
     }                                                     \
   }
 
+// utility macro
+#define MIN(a, b) (((a) < (b)) ? (a) : (b))
+#define MAX(a, b) (((a) > (b)) ? (a) : (b))
+
+#define INSERT_ZERO(mask, offset)                         \
+(((mask) & (offset)) << 1) | ((~(mask)) & (offset))       \
+
+
 // const memory for gates
 __constant__ COMPLEX q1g[4];
 __constant__ COMPLEX q2g[16];
 __constant__ COMPLEX q2dg[4];
-
-// utility functions necessary to traverse a state
-static __device__ size_t insert_zero(
-  size_t mask,
-  size_t offset
-)
-{
-  return ((mask & offset) << 1) | ((~mask) & offset);
-}
-
-static __device__ size_t insert_two_zeros(
-  size_t mask1,
-  size_t mask2,
-  size_t offset
-)
-{
-  size_t min_index_mask = mask1 > mask2 ? mask1 : mask2;
-  size_t max_index_mask = mask1 > mask2 ? mask2 : mask1;
-  return insert_zero(max_index_mask, insert_zero(min_index_mask, offset));
-}
 
 // matrix inverse
 static char* inv(const COMPLEX* A, COMPLEX* Ainv, size_t size) {
@@ -138,7 +126,9 @@ static char* inv(const COMPLEX* A, COMPLEX* Ainv, size_t size) {
   CUBLAS_CHECK(MATINV(handle, size, Abatch, size, Ainvbatch, size, info, 1));
   CUDA_CHECK(cudaMemcpy(&host_info, info, sizeof(int), cudaMemcpyDeviceToHost));
   if ( host_info != 0 ) {
-    return "The input matrix is singular.";
+    char* err_msg = (char*)malloc(1024 * sizeof(char));
+    snprintf(err_msg, 1024, "U(%d, %d) is zero.", host_info, host_info);
+    return err_msg;
   }
   CUBLAS_CHECK(cublasDestroy(handle));
   CUDA_CHECK(cudaFree(info));
@@ -227,7 +217,7 @@ static __global__ void _q1grad (
     {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_zero(mask, tid);
+    size_t btid = INSERT_ZERO(mask, tid);
     ONE_POSITION_FOR(
       tmp[2 * p + q] = ADD(
         tmp[2 * p + q],
@@ -315,6 +305,8 @@ static __global__ void _q2grad (
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
+  size_t max_mask = MIN(mask1, mask2);
+  size_t min_mask = MAX(mask1, mask2);
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
@@ -325,7 +317,8 @@ static __global__ void _q2grad (
     {0, 0}, {0, 0}, {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    size_t btid = INSERT_ZERO(min_mask, tid);
+    btid = INSERT_ZERO(max_mask, btid);
     TWO_POSITIONS_FOR(
       tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],
@@ -415,12 +408,15 @@ static __global__ void _q2grad_diag (
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
+  size_t max_mask = MIN(mask1, mask2);
+  size_t min_mask = MAX(mask1, mask2);
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
   COMPLEX tmp[4] = { {0, 0}, {0, 0}, {0, 0}, {0, 0} };
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    size_t btid = INSERT_ZERO(min_mask, tid);
+    btid = INSERT_ZERO(max_mask, btid);
     ONE_POSITION_FOR(
       tmp[2 * p + q] = ADD(
         tmp[2 * p + q],
@@ -525,7 +521,7 @@ static __global__ void _q1gate(
   size_t size = 1 << qubits_number;
   size_t batch_size = size >> 1;
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_zero(mask, tid);
+    size_t btid = INSERT_ZERO(mask, tid);
     COMPLEX tmp[2] = { {0, 0}, {0, 0} };
     ONE_POSITION_FOR(
       tmp[p] = ADD(tmp[p], MUL(q1g[2 * p + q], state[stride * q + btid]));
@@ -584,11 +580,14 @@ static __global__ void _q2gate(
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
+  size_t max_mask = MIN(mask1, mask2);
+  size_t min_mask = MAX(mask1, mask2);
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    size_t btid = INSERT_ZERO(min_mask, tid);
+    btid = INSERT_ZERO(max_mask, btid);
     COMPLEX tmp[4] = { {0, 0}, {0, 0}, {0, 0}, {0, 0} };
     TWO_POSITIONS_FOR(
       tmp[2 * q2 + q1] = ADD(
@@ -657,11 +656,14 @@ static __global__ void _q2gate_diag(
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
+  size_t max_mask = MIN(mask1, mask2);
+  size_t min_mask = MAX(mask1, mask2);
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    size_t btid = INSERT_ZERO(min_mask, tid);
+    btid = INSERT_ZERO(max_mask, btid);
     state[btid] = MUL(q2dg[0], state[btid]);
     state[btid + stride1] = MUL(q2dg[1], state[btid + stride1]);
     state[btid + stride2] = MUL(q2dg[2], state[btid + stride2]);
@@ -701,7 +703,7 @@ static __global__ void _get_q1density(
     {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_zero(mask, tid);
+    size_t btid = INSERT_ZERO(mask, tid);
     ONE_POSITION_FOR(
       tmp[2 * p + q] = ADD(
         tmp[2 * p + q],
@@ -786,6 +788,8 @@ static __global__ void _get_q2density(
   size_t size = 1 << qubits_number;
   size_t mask1 =  SIZE_MAX << pos1;
   size_t mask2 =  SIZE_MAX << pos2;
+  size_t max_mask = MIN(mask1, mask2);
+  size_t min_mask = MAX(mask1, mask2);
   size_t stride1 = 1 << pos1;
   size_t stride2 = 1 << pos2;
   size_t batch_size = size >> 2;
@@ -796,7 +800,8 @@ static __global__ void _get_q2density(
     {0, 0}, {0, 0}, {0, 0}, {0, 0},
   };
   PARALLEL_FOR(tid, batch_size,
-    size_t btid = insert_two_zeros(mask1, mask2, tid);
+    size_t btid = INSERT_ZERO(min_mask, tid);
+    btid = INSERT_ZERO(max_mask, btid);
     TWO_POSITIONS_FOR(
       tmp[8 * p2 + 4 * p1 + 2 * q2 + q1] = ADD(
         tmp[8 * p2 + 4 * p1 + 2 * q2 + q1],

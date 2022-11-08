@@ -49,8 +49,8 @@ def params2gates(params: jnp.ndarray, qubits_number: int) -> List[jnp.ndarray]:
   return gates
 
 # parameters of the problem
-qubits_number = 22
-layers_number = 22  # number of alternatin layers (ZZ interaction, X magnetic field)
+qubits_number = 26
+layers_number = 26  # number of alternatin layers (ZZ interaction, X magnetic field)
 max_iters_number = 300
 magnetic_field = 1.  # the phase transition point
 
